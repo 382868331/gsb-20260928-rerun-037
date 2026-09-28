@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "variant-pipeline"
+version = "0.1.0"
+description = "Research-only candidate variant summary with evidence records"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+variant-pipeline = "variant_pipeline.cli:main"
+
+[tool.setuptools]
+packages = ["variant_pipeline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

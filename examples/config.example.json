@@ -1,0 +1,24 @@
+{
+  "sample": {
+    "sample_id": "SAMPLE-DEMO-001",
+    "read_group": "rg-1",
+    "description": "Synthetic known-substitution and short-indel demo"
+  },
+  "reference": {
+    "fasta_path": "reference.fasta",
+    "name": "synth-1",
+    "assembly": "synth-ref-v1",
+    "description": "Manual synthetic reference, research workflow only"
+  },
+  "reads_path": "reads.sam",
+  "parameters": {
+    "min_base_quality": 20,
+    "min_mapping_quality": 1,
+    "min_coverage_for_calling": 5,
+    "min_alt_count": 2,
+    "min_alt_fraction": 0.2,
+    "strand_bias_p_threshold": 0.01,
+    "low_quality_fraction_threshold": 0.2,
+    "low_coverage_depth": 5
+  }
+}
