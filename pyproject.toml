@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "variant-research-pipeline"
+version = "0.1.0"
+description = "Research-only evidence review for candidate substitutions and short indels"
+requires-python = ">=3.10"
+
+[project.scripts]
+variant-pipeline = "variant_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["variant_pipeline*"]

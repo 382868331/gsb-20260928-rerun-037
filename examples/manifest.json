@@ -1,0 +1,20 @@
+{
+  "sample_id": "synthetic-demo-001",
+  "reference": {
+    "name": "synthetic-human-like-reference",
+    "version": "demo-v1",
+    "fasta": "reference.fa"
+  },
+  "reads": {
+    "sam": "aligned.sam"
+  },
+  "parameters": {
+    "min_base_quality": 20,
+    "min_mapping_quality": 20,
+    "min_depth": 10,
+    "min_alt_templates": 3,
+    "min_pass_score": 80.0,
+    "skip_duplicates": true,
+    "min_strand_bias_p": 0.1
+  }
+}

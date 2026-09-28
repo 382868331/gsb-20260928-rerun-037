@@ -1,0 +1,6 @@
+variant_id,chromosome,position,reference_allele,alternate_allele,variant_type,status,score,support_templates,reference_templates,other_allele_templates,conflicting_templates,low_quality_templates,template_depth,allele_frequency,strand_bias_fisher_p,coverage_note
+synthetic-region:8:TACG>T,synthetic-region,8,TACG,T,deletion,review,63.75,3,21,0,0,0,24,0.125,1.0,
+synthetic-region:50:C>G,synthetic-region,50,C,G,substitution,review,90.02,6,6,0,0,2,14,0.5,0.0022,
+synthetic-region:58:A>ACGT,synthetic-region,58,A,ACGT,insertion,review,76.83,3,6,0,0,0,9,0.3333,1.0,Mean template depth 9.0 is below minimum 10
+synthetic-region:60:G>T,synthetic-region,60,G,T,substitution,review,76.0,2,2,0,0,0,4,0.5,1.0,Mean template depth 4.0 is below minimum 10
+synthetic-region:65:A>T,synthetic-region,65,A,T,substitution,candidate,100.0,6,6,0,0,0,12,0.5,1.0,

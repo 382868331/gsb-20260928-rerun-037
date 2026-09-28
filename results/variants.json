@@ -1,0 +1,185 @@
+{
+  "research_only": true,
+  "disclaimer": "Research workflow output only; not validated for diagnosis, treatment, or other medical decisions.",
+  "sample": {
+    "sample_id": "synthetic-demo-001",
+    "reference_name": "synthetic-human-like-reference",
+    "reference_version": "demo-v1"
+  },
+  "parameters": {
+    "min_base_quality": 20,
+    "min_mapping_quality": 20,
+    "min_depth": 10,
+    "min_alt_templates": 3,
+    "min_pass_score": 80.0,
+    "min_strand_bias_p": 0.1,
+    "skip_duplicates": true
+  },
+  "candidates": [
+    {
+      "variant_id": "synthetic-region:8:TACG>T",
+      "chromosome": "synthetic-region",
+      "position": 8,
+      "reference_allele": "TACG",
+      "alternate_allele": "T",
+      "variant_type": "deletion",
+      "score": 63.75,
+      "status": "review",
+      "evidence": {
+        "supports": {
+          "templates": 3,
+          "forward_templates": 2,
+          "reverse_templates": 1,
+          "mean_base_quality": 40.0
+        },
+        "opposes": {
+          "reference_templates": 21,
+          "other_allele_templates": 0,
+          "conflicting_templates": 0
+        },
+        "low_quality_templates": 0,
+        "coverage": {
+          "template_depth": 24,
+          "mean_allele_depth": 24.0,
+          "covered_allele_positions": 1,
+          "required_allele_positions": 1,
+          "allele_frequency": 0.125,
+          "strand_bias_fisher_p": 1.0
+        },
+        "coverage_note": null
+      }
+    },
+    {
+      "variant_id": "synthetic-region:50:C>G",
+      "chromosome": "synthetic-region",
+      "position": 50,
+      "reference_allele": "C",
+      "alternate_allele": "G",
+      "variant_type": "substitution",
+      "score": 90.02,
+      "status": "review",
+      "evidence": {
+        "supports": {
+          "templates": 6,
+          "forward_templates": 0,
+          "reverse_templates": 6,
+          "mean_base_quality": 40.0
+        },
+        "opposes": {
+          "reference_templates": 6,
+          "other_allele_templates": 0,
+          "conflicting_templates": 0
+        },
+        "low_quality_templates": 2,
+        "coverage": {
+          "template_depth": 14,
+          "mean_allele_depth": 14.0,
+          "covered_allele_positions": 1,
+          "required_allele_positions": 1,
+          "allele_frequency": 0.5,
+          "strand_bias_fisher_p": 0.0022
+        },
+        "coverage_note": null
+      }
+    },
+    {
+      "variant_id": "synthetic-region:58:A>ACGT",
+      "chromosome": "synthetic-region",
+      "position": 58,
+      "reference_allele": "A",
+      "alternate_allele": "ACGT",
+      "variant_type": "insertion",
+      "score": 76.83,
+      "status": "review",
+      "evidence": {
+        "supports": {
+          "templates": 3,
+          "forward_templates": 2,
+          "reverse_templates": 1,
+          "mean_base_quality": 40.0
+        },
+        "opposes": {
+          "reference_templates": 6,
+          "other_allele_templates": 0,
+          "conflicting_templates": 0
+        },
+        "low_quality_templates": 0,
+        "coverage": {
+          "template_depth": 9,
+          "mean_allele_depth": 9.0,
+          "covered_allele_positions": 1,
+          "required_allele_positions": 1,
+          "allele_frequency": 0.3333,
+          "strand_bias_fisher_p": 1.0
+        },
+        "coverage_note": "Mean template depth 9.0 is below minimum 10"
+      }
+    },
+    {
+      "variant_id": "synthetic-region:60:G>T",
+      "chromosome": "synthetic-region",
+      "position": 60,
+      "reference_allele": "G",
+      "alternate_allele": "T",
+      "variant_type": "substitution",
+      "score": 76.0,
+      "status": "review",
+      "evidence": {
+        "supports": {
+          "templates": 2,
+          "forward_templates": 2,
+          "reverse_templates": 0,
+          "mean_base_quality": 40.0
+        },
+        "opposes": {
+          "reference_templates": 2,
+          "other_allele_templates": 0,
+          "conflicting_templates": 0
+        },
+        "low_quality_templates": 0,
+        "coverage": {
+          "template_depth": 4,
+          "mean_allele_depth": 4.0,
+          "covered_allele_positions": 1,
+          "required_allele_positions": 1,
+          "allele_frequency": 0.5,
+          "strand_bias_fisher_p": 1.0
+        },
+        "coverage_note": "Mean template depth 4.0 is below minimum 10"
+      }
+    },
+    {
+      "variant_id": "synthetic-region:65:A>T",
+      "chromosome": "synthetic-region",
+      "position": 65,
+      "reference_allele": "A",
+      "alternate_allele": "T",
+      "variant_type": "substitution",
+      "score": 100.0,
+      "status": "candidate",
+      "evidence": {
+        "supports": {
+          "templates": 6,
+          "forward_templates": 3,
+          "reverse_templates": 3,
+          "mean_base_quality": 40.0
+        },
+        "opposes": {
+          "reference_templates": 6,
+          "other_allele_templates": 0,
+          "conflicting_templates": 0
+        },
+        "low_quality_templates": 0,
+        "coverage": {
+          "template_depth": 12,
+          "mean_allele_depth": 12.0,
+          "covered_allele_positions": 1,
+          "required_allele_positions": 1,
+          "allele_frequency": 0.5,
+          "strand_bias_fisher_p": 1.0
+        },
+        "coverage_note": null
+      }
+    }
+  ]
+}
