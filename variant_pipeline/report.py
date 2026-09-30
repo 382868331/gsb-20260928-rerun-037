@@ -7,6 +7,7 @@ chrom/pos/ref/alt) so a later annotation stage can join on the same key.
 from __future__ import annotations
 
 import csv
+import io
 import json
 from pathlib import Path
 
@@ -37,6 +38,13 @@ def candidate_dict(ev) -> dict:
         "confidence": ev.confidence,
         "score_components": ev.components,
         "flags": ev.flags,
+        "alt_fragments": ev.alt_fragments,
+        "ref_fragments": ev.ref_fragments,
+        "other_alt_fragments": ev.other_alt_fragments,
+        "conflicting_overlap_fragments": ev.conflicting_overlap_fragments,
+        "depth": ev.depth,
+        "passing_depth": ev.passing_depth,
+        "informative_depth": ev.informative_depth,
         "supporting_evidence": ev.supporting_summary(),
         "opposing_evidence": ev.opposing_summary(),
         "coverage": {
@@ -47,8 +55,8 @@ def candidate_dict(ev) -> dict:
     }
 
 
-def build_payload(cfg: RunConfig, result: CallResult) -> dict:
-    return {
+def build_payload(cfg: RunConfig, result: CallResult, batch: dict | None = None) -> dict:
+    payload = {
         "disclaimer": RESEARCH_DISCLAIMER,
         "analysis_version": ANALYSIS_VERSION,
         "run": {
@@ -71,6 +79,9 @@ def build_payload(cfg: RunConfig, result: CallResult) -> dict:
             for c, s, e, d in result.low_coverage
         ],
     }
+    if batch is not None:
+        payload["batch"] = batch
+    return payload
 
 
 def write_json(payload: dict, path: str | Path) -> None:
@@ -81,20 +92,32 @@ def write_json(payload: dict, path: str | Path) -> None:
 
 def write_candidates_tsv(result: CallResult, path: str | Path) -> None:
     with Path(path).open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=TSV_COLUMNS, delimiter="\t")
-        writer.writeheader()
-        for ev in result.candidates:
-            row = {col: getattr(ev, col, "") for col in TSV_COLUMNS if col != "flags"}
-            row["flags"] = ";".join(ev.flags)
-            writer.writerow(row)
+        handle.write(candidates_tsv_text(result))
+
+
+def candidates_tsv_text(result: CallResult) -> str:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=TSV_COLUMNS, delimiter="\t")
+    writer.writeheader()
+    for ev in result.candidates:
+        row = {col: getattr(ev, col, "") for col in TSV_COLUMNS if col != "flags"}
+        row["flags"] = ";".join(ev.flags)
+        writer.writerow(row)
+    return buffer.getvalue()
 
 
 def write_coverage_tsv(result: CallResult, path: str | Path) -> None:
     with Path(path).open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(["chrom", "pos", "fragment_depth", "passing_depth"])
-        for c in result.coverage:
-            writer.writerow([c.chrom, c.pos, c.fragment_depth, c.passing_depth])
+        handle.write(coverage_tsv_text(result))
+
+
+def coverage_tsv_text(result: CallResult) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter="\t")
+    writer.writerow(["chrom", "pos", "fragment_depth", "passing_depth"])
+    for c in result.coverage:
+        writer.writerow([c.chrom, c.pos, c.fragment_depth, c.passing_depth])
+    return buffer.getvalue()
 
 
 def render_text_report(payload: dict) -> str:

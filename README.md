@@ -35,13 +35,46 @@
 配对重叠的单片段计票与冲突弃权（保留 `MATE_OVERLAP_CONFLICT` 弃权
 原因）。
 
-## 版本与历史批次
+## 版本与历史批次（不可变）
 
 分析规则版本记录在包常量 `variant_pipeline.ANALYSIS_VERSION`
-（当前 `orientation-forward-v2`，包版本 `0.2.0`），并写入
-`candidates.json` 的 `analysis_version` 与 `report.txt` 页眉。重跑只向
-新的输出目录写文件，不覆盖、不重算旧批次；旧批次结果原样保留，新规则
-分析以新版本号标识。
+（当前 `orientation-forward-v2`，包版本 `0.3.0`）。**每次分析都发布为一个
+独立、不可变的批次**，即使 `--outdir` 与上次完全相同也不会覆盖旧结果：
+
+- 批次目录：`<outdir>/batches/<UTC时间戳>_<内容ID前12位>/`，内含
+  `candidates.json/.tsv`、`coverage.tsv`、`report.txt`、`manifest.json`，
+  以及 `input/` 下当次使用的 `config.json`、`reference.fasta`、`reads.sam`
+  原始快照。输入、解释规则版本（`analysis_version`）与输出在同一批次内
+  一一对应。
+- `manifest.json` 记录全部文件的 SHA-256、输入哈希、参数、规则版本与
+  `content_id`（规则版本+三份输入的联合哈希）；`content_id` 相同的重复
+  请求会生成**新批次**并通过 `duplicate_of` 指向前序批次，旧批次原封不动。
+- 发布是原子操作：先写隐藏暂存目录，最后整体 rename；发布失败只清理
+  暂存目录，`index.json` 也以原子替换更新，已发布版本不受影响。
+- 根目录 `index.json` 按时间顺序登记全部批次，进程重开后仍可列出、
+  比较、导出和校验任意历史版本。
+
+### 跨版本差异比较
+
+`diff` 只读取两个已冻结批次的 `candidates.json` 与 `manifest.json`，
+**绝不重新分析旧输入**，因此旧内容不会被新代码改写。输出列出候选的
+新增（appeared）、消失（disappeared）与支持/反对数量、可信度、状态的
+逐字段变化，并依据两批次的输入哈希与 `analysis_version` 归因：
+
+- 仅输入哈希不同 → `input_change`（输入变化，如新读段、参考或参数）；
+- 仅规则版本不同 → `interpretation_rule_change`（方向解释规则变化）；
+- 两者都变 → 同时列出两个归因；相同重复批次 →
+  `unchanged_inputs_and_rules`。
+
+两批次的支持记录（包括共享片段合并结果与软截断位置的原始证据）始终
+各自随本批次 `input/reads.sam` 与候选字段独立保留，差异比较只做并列
+对照，**不拼接两个版本的证据**。
+
+### 历史导出与完整性核对
+
+`export` 直接复制冻结批次文件（含输入快照），不重算；`verify` 只重算
+存储文件的 SHA-256 并与 manifest 比对，用于核对旧内容有没有被再次分析
+或被外部改写，校验本身也不会触发分析。
 
 ## 输出
 
@@ -61,7 +94,17 @@
 .venv/bin/python examples/generate_example_reads.py
 .venv/bin/python -m variant_pipeline call \
   --config examples/config.example.json --outdir out
+.venv/bin/python -m variant_pipeline list --outdir out
+.venv/bin/python -m variant_pipeline diff \
+  --outdir out --from <旧批次id或前缀> --to <新批次id或前缀>
+.venv/bin/python -m variant_pipeline export \
+  --outdir out --batch <批次id或latest> --dest /path/to/export
+.venv/bin/python -m variant_pipeline verify --outdir out --batch latest
 ```
+
+`list` 与 `diff` 支持 `--json`；批次 id 支持唯一前缀或 `latest`。
+对同一输出根目录重复执行 `call` 是安全的：新分析进入新批次目录，旧批次
+与 `index.json` 历史记录保持可用。
 
 ## 测试
 
