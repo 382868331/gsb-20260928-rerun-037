@@ -1,9 +1,19 @@
 """Minimal SAM alignment reader (SAM text, no external dependencies).
 
-Covers M/=/X match columns, I insertions, D/N deletions and S/H/P clips
-(clips produce no evidence). Secondary, supplementary and unmapped records
-are ignored. Mate overlap is merged per DNA fragment so reads are never
-double counted.
+Orientation convention:
+
+Every accepted record is interpreted on the forward reference axis. POS is
+the 1-based reference position of the first consumed reference base and the
+CIGAR (M/=/X, I, D/N, S/H/P) is walked in forward reference order. FLAG 0x10
+only labels the strand for strand-bias statistics and never changes base
+coordinates or quality order. SEQ/QUAL are therefore compared to the
+reference directly and are never reverse complemented again: a fully
+matching reverse read stored in reference orientation contributes zero
+variants, the same as a forward read.
+
+Clips (S/H/P) produce no evidence. Secondary, supplementary and unmapped
+records are ignored. Mate overlap is merged per DNA fragment so reads are
+never double counted; conflicting overlap alleles abstain at that position.
 """
 
 from __future__ import annotations
@@ -140,12 +150,10 @@ class _MateCall:
 
 
 def _mate_call(rec: AlignmentRecord, reference: Reference) -> _MateCall:
+    # SEQ/QUAL and CIGAR are already expressed on the forward reference axis
+    # for both read orientations; only strand labelling uses FLAG 0x10.
     seq = rec.seq
     quals = list(rec.quals)
-    if rec.is_reverse:
-        seq = reverse_complement(seq)
-        quals = quals[::-1]
-
     qi = 0
     ri = rec.pos
     span_start = rec.pos

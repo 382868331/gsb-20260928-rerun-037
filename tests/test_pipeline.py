@@ -195,7 +195,8 @@ def test_low_coverage_reported_separately(tmp_path):
 
 
 def test_reverse_read_sequence_is_oriented(tmp_path):
+    # reverse_complement remains an internal string utility; the orientation
+    # contract itself is verified in test_orientation_contract.py.
     from variant_pipeline.samio import reverse_complement
-
     assert reverse_complement("ACGT") == "ACGT"
     assert reverse_complement("AACG") == "CGTT"
