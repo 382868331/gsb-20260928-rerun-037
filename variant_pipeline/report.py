@@ -10,7 +10,7 @@ import csv
 import json
 from pathlib import Path
 
-from . import RESEARCH_DISCLAIMER
+from . import RESEARCH_DISCLAIMER, RULES_VERSION
 from .caller import CallResult
 from .config import RunConfig
 
@@ -51,6 +51,7 @@ def build_payload(cfg: RunConfig, result: CallResult) -> dict:
     return {
         "disclaimer": RESEARCH_DISCLAIMER,
         "run": {
+            "rules_version": RULES_VERSION,
             "sample": {
                 "sample_id": cfg.sample.sample_id,
                 "read_group": cfg.sample.read_group,
@@ -101,7 +102,10 @@ def render_text_report(payload: dict) -> str:
     run = payload["run"]
     lines.append("候选变异证据汇总 (research use only / 仅供研究流程)")
     lines.append("=" * 68)
-    lines.append(f"样本: {run['sample']['sample_id']}  参考版本: {run['reference']['assembly']}")
+    lines.append(
+        f"样本: {run['sample']['sample_id']}  参考版本: {run['reference']['assembly']}  "
+        f"规则版本: {run['rules_version']}"
+    )
     lines.append("提示: " + payload["disclaimer"])
     lines.append("")
     for cand in payload["candidates"]:

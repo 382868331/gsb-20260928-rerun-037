@@ -1,5 +1,11 @@
 """Minimal SAM alignment reader (SAM text, no external dependencies).
 
+Input orientation follows the SAM specification: SEQ/QUAL are always stored
+in forward-reference orientation, even for reverse-strand alignments
+(FLAG 0x10), and CIGAR is ordered by increasing reference coordinate. The
+stored sequence is therefore compared to the reference directly and must
+never be reverse complemented a second time.
+
 Covers M/=/X match columns, I insertions, D/N deletions and S/H/P clips
 (clips produce no evidence). Secondary, supplementary and unmapped records
 are ignored. Mate overlap is merged per DNA fragment so reads are never
@@ -140,11 +146,11 @@ class _MateCall:
 
 
 def _mate_call(rec: AlignmentRecord, reference: Reference) -> _MateCall:
+    # SAM stores SEQ/QUAL in forward-reference orientation for both strands,
+    # so the stored bases are walked against the reference as-is; reversing
+    # them here would turn an exact reverse-strand match into false mismatches.
     seq = rec.seq
     quals = list(rec.quals)
-    if rec.is_reverse:
-        seq = reverse_complement(seq)
-        quals = quals[::-1]
 
     qi = 0
     ri = rec.pos

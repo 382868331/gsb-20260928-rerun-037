@@ -1,6 +1,10 @@
-"""Helpers to synthesize SAM reads against a simple ACGT-repeat reference."""
+"""Helpers to synthesize standard SAM reads against an ACGT-repeat reference.
 
-from variant_pipeline.samio import reverse_complement
+All records follow the SAM storage convention: SEQ/QUAL are written in
+forward-reference orientation regardless of strand (reverse alignments only
+set FLAG 0x10; the stored bases are already reverse complemented relative to
+the sequenced molecule and the pipeline must not RC them again).
+"""
 
 REF = "ACGT" * 13  # 52 bp
 RNAME = "synth-1"
@@ -67,11 +71,9 @@ def deletion_read(
 
 
 def _record(qname, flag, start, cigar, seq, qual, mapq=60):
-    stored = reverse_complement(seq) if flag & 16 else seq
-    stored_qual = qual[::-1] if flag & 16 else qual
     return (
         f"{qname}\t{flag}\t{RNAME}\t{start}\t{mapq}\t{cigar}\t*\t0\t0\t"
-        f"{stored}\t{stored_qual}\n"
+        f"{seq}\t{qual}\n"
     )
 
 
