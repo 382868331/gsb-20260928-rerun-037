@@ -38,10 +38,33 @@
 ## 版本与历史批次
 
 分析规则版本记录在包常量 `variant_pipeline.ANALYSIS_VERSION`
-（当前 `orientation-forward-v2`，包版本 `0.2.0`），并写入
-`candidates.json` 的 `analysis_version` 与 `report.txt` 页眉。重跑只向
-新的输出目录写文件，不覆盖、不重算旧批次；旧批次结果原样保留，新规则
-分析以新版本号标识。
+（当前 `orientation-forward-v2`，包版本 `0.3.0`）。
+
+`--outdir` 是**版本化结果库**的根目录：每次 `call` 都把结果发布为一个
+新的不可变版本目录 `outdir/runs/vNNNN/`（含 `manifest.json`），绝不覆盖
+或重算旧版本，因此同一输出位置反复分析新输入也是安全的。发布经临时
+目录 + 原子重命名完成：发布失败不会留下半成品版本，已有版本不受影响。
+完全相同的请求（输入文件、配置、规则版本的指纹一致）不会重复分析，
+直接指向已发布版本；需要强制再分析时用 `--force`。
+
+每个版本的 manifest 记录输入指纹（配置、reads、参考 FASTA 的 SHA-256）、
+规则版本和全部输出文件的哈希，输入、解释规则与输出一一对应：
+
+- `variant-pipeline list --outdir OUT` 列出版本；
+- `variant-pipeline verify --outdir OUT [--version vNNNN]` 重算哈希，
+  核对历史版本未被再次分析改写；
+- `variant-pipeline export --outdir OUT --version vNNNN --dest DIR`
+  在完整性核对通过后导出任一历史版本（重开进程后同样可用）；
+- `variant-pipeline compare --outdir OUT --from vA --to vB`
+  比较两个版本的候选差异。
+
+## 版本间差异比较
+
+`compare` 按稳定变异身份对齐两个版本的候选，区分**新增 / 消失 /
+支持数量或状态变化**，并根据 manifest 归因：输入（reads/参考）变化、
+方向解释规则（analysis_version/参数）变化，或两者同时变化。对两个版本
+都存在的候选，报告把各自版本的支持/反对证据（含共享片段与软截断
+留下的原始记录）并排列出，**绝不跨版本合并或拼接支持计数**。
 
 ## 输出
 
@@ -50,10 +73,12 @@
 方向偏差 p 值），以及深度、标记、评分分量和状态
 （`PASS` / `SUSPECT` / `REJECTED` / `LOW_COVERAGE`）。
 
+每个版本目录 `runs/vNNNN/` 内含：
 - `candidates.json`：完整结构化结果（含稳定变异身份，供注释阶段 join）
 - `candidates.tsv`：候选表
 - `coverage.tsv`：逐位片段深度
 - `report.txt`：中文可读报告，末尾单列覆盖不足区间
+- `manifest.json`：输入指纹、规则版本与输出哈希（完整性核对依据）
 
 ## 使用
 
@@ -61,6 +86,10 @@
 .venv/bin/python examples/generate_example_reads.py
 .venv/bin/python -m variant_pipeline call \
   --config examples/config.example.json --outdir out
+.venv/bin/python -m variant_pipeline list --outdir out
+.venv/bin/python -m variant_pipeline compare --outdir out --from v0001 --to v0002
+.venv/bin/python -m variant_pipeline verify --outdir out
+.venv/bin/python -m variant_pipeline export --outdir out --version v0001 --dest out-v1
 ```
 
 ## 测试

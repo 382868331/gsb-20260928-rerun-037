@@ -6,7 +6,7 @@ candidate. It is intended for research workflow use only and does not emit
 clinical or medical conclusions.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Analysis rule version. Bumped when evidence semantics change; outputs
 # produced under previous rule versions remain valid historical batches and
