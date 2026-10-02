@@ -59,6 +59,8 @@ class CandidateEvidence:
     kind: str
     # supporting evidence
     alt_fragments: int
+    independent_alt_fragments: int
+    shared_ambiguous_alt_fragments: int
     alt_forward: int
     alt_reverse: int
     alt_mean_base_quality: float
@@ -82,6 +84,8 @@ class CandidateEvidence:
     def supporting_summary(self) -> dict:
         return {
             "alt_fragments": self.alt_fragments,
+            "independent_alt_fragments": self.independent_alt_fragments,
+            "shared_ambiguous_alt_fragments": self.shared_ambiguous_alt_fragments,
             "forward": self.alt_forward,
             "reverse": self.alt_reverse,
             "mean_base_quality": round(self.alt_mean_base_quality, 2),

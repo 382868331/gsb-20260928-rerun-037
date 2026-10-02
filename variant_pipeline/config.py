@@ -45,6 +45,7 @@ class RunConfig:
     reference: ReferenceConfig
     parameters: Parameters = field(default_factory=Parameters)
     reads_path: str | None = None
+    read_batches: tuple = ()
 
     @staticmethod
     def from_dict(data: dict) -> "RunConfig":
@@ -57,11 +58,17 @@ class RunConfig:
         params = Parameters(
             **_filter_kwargs(Parameters, data.get("parameters", {}))
         )
+        raw_batches = data.get("read_batches", [])
+        read_batches = tuple(
+            b if isinstance(b, dict) else {"path": b, "label": b}
+            for b in raw_batches
+        )
         return RunConfig(
             sample=sample,
             reference=reference,
             parameters=params,
             reads_path=data.get("reads_path"),
+            read_batches=read_batches,
         )
 
     @staticmethod
@@ -88,11 +95,19 @@ def _resolve_paths(cfg: RunConfig, base_dir: Path) -> RunConfig:
     ref_path = Path(cfg.reference.fasta_path)
     if not ref_path.is_absolute():
         ref_path = base_dir / ref_path
+    def resolve_read(path_value: str) -> str:
+        rp = Path(path_value)
+        if not rp.is_absolute():
+            rp = base_dir / rp
+        return str(rp.resolve())
+
     reads_path = cfg.reads_path
     if reads_path is not None:
-        rp = Path(reads_path)
-        if not rp.is_absolute():
-            reads_path = str((base_dir / rp).resolve())
+        reads_path = resolve_read(reads_path)
+    read_batches = tuple(
+        {**batch, "path": resolve_read(batch["path"])}
+        for batch in cfg.read_batches
+    )
     reference = ReferenceConfig(
         fasta_path=str(ref_path.resolve()),
         name=cfg.reference.name,
@@ -104,4 +119,5 @@ def _resolve_paths(cfg: RunConfig, base_dir: Path) -> RunConfig:
         reference=reference,
         parameters=cfg.parameters,
         reads_path=reads_path,
+        read_batches=read_batches,
     )

@@ -20,6 +20,14 @@ from .report import (
     write_json,
 )
 from .store import OUTPUT_FILENAMES, RunStore, StoreError, VerificationError
+from .selection import (
+    adopt,
+    load_payload,
+    project,
+    render_projection,
+    selected_variant_ids,
+    withdraw,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,12 +72,33 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--outdir", required=True)
     verify.add_argument("--version",
                         help="verify a single version (default: all)")
+    adopt_cmd = sub.add_parser(
+        "adopt", help="tentatively choose one shared-ambiguity candidate")
+    adopt_cmd.add_argument("--outdir", required=True)
+    adopt_cmd.add_argument("--version", required=True)
+    adopt_cmd.add_argument("--variant", required=True)
+
+    withdraw_cmd = sub.add_parser(
+        "withdraw", help="withdraw a tentative choice without editing run")
+    withdraw_cmd.add_argument("--outdir", required=True)
+    withdraw_cmd.add_argument("--version", required=True)
+    withdraw_cmd.add_argument("--variant", required=True)
+
+    whatif = sub.add_parser(
+        "what-if", help="show evidence projection for tentative choices")
+    whatif.add_argument("--outdir", required=True)
+    whatif.add_argument("--version", required=True)
+    whatif.add_argument("--variant", action="append", default=[])
+    whatif.add_argument("--json-out")
     return parser
 
 
 def _cmd_call(args) -> int:
     cfg = RunConfig.load(args.config)
-    reads = args.reads or cfg.reads_path
+    batch_paths = [b["path"] for b in cfg.read_batches]
+    fingerprint_reads = batch_paths or None
+    reads = args.reads or cfg.reads_path or (
+        batch_paths[0] if batch_paths else None)
     if not reads:
         raise StoreError(
             "no reads path: set reads_path in config or pass --reads")
@@ -81,6 +110,7 @@ def _cmd_call(args) -> int:
         config_dict=config_dict,
         reads_path=reads,
         fasta_path=cfg.reference.fasta_path,
+        reads_paths=fingerprint_reads,
     )
     if not args.force:
         duplicate = store.find_duplicate(fingerprint)
@@ -99,6 +129,8 @@ def _cmd_call(args) -> int:
             if Path(args.outdir).parent.exists() else None) as tmp:
         tmpdir = Path(tmp)
         write_json(payload, tmpdir / "candidates.json")
+        write_json(payload.get("evidence_ledger", {}),
+                   tmpdir / "evidence_ledger.json")
         write_candidates_tsv(result, tmpdir / "candidates.tsv")
         write_coverage_tsv(result, tmpdir / "coverage.tsv")
         (tmpdir / "report.txt").write_text(text, encoding="utf-8")
@@ -108,6 +140,7 @@ def _cmd_call(args) -> int:
             config_dict=config_dict,
             reads_path=reads,
             fasta_path=cfg.reference.fasta_path,
+            reads_paths=fingerprint_reads,
             fingerprint=fingerprint,
         )
     print(text)
@@ -167,6 +200,31 @@ def _cmd_verify(args) -> int:
     return 0
 
 
+def _cmd_adopt(args) -> int:
+    adopt(RunStore(args.outdir), args.version, args.variant)
+    print(f"[selection] {args.version} 已临时采用 {args.variant}；原始分析版本未修改")
+    return 0
+
+
+def _cmd_withdraw(args) -> int:
+    withdraw(RunStore(args.outdir), args.version, args.variant)
+    print(f"[selection] 已撤回 {args.version} 对 {args.variant} 的临时采用")
+    return 0
+
+
+def _cmd_what_if(args) -> int:
+    store = RunStore(args.outdir)
+    payload = load_payload(store, args.version)
+    selected = set(args.variant) or selected_variant_ids(store, args.version)
+    projection = project(payload, selected)
+    print(render_projection(projection))
+    if args.json_out:
+        Path(args.json_out).write_text(
+            json.dumps(projection, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {
@@ -175,10 +233,12 @@ def main(argv: list[str] | None = None) -> int:
         "compare": _cmd_compare,
         "export": _cmd_export,
         "verify": _cmd_verify,
+        "adopt": _cmd_adopt,
+        "withdraw": _cmd_withdraw,
+        "what-if": _cmd_what_if,
     }
     try:
         return handlers[args.command](args)
     except (StoreError, VerificationError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-

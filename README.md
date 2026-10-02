@@ -38,7 +38,7 @@
 ## 版本与历史批次
 
 分析规则版本记录在包常量 `variant_pipeline.ANALYSIS_VERSION`
-（当前 `orientation-forward-v2`，包版本 `0.3.0`）。
+（当前 `orientation-forward-v3`，包版本 `0.4.0`）。
 
 `--outdir` 是**版本化结果库**的根目录：每次 `call` 都把结果发布为一个
 新的不可变版本目录 `outdir/runs/vNNNN/`（含 `manifest.json`），绝不覆盖
@@ -58,6 +58,12 @@
 - `variant-pipeline compare --outdir OUT --from vA --to vB`
   比较两个版本的候选差异。
 
+配置可使用 `read_batches` 提供多个片段批次，每批包含稳定 `label` 与
+`path`。批次内容的 SHA-256 用于重复导入去重；片段身份是
+`批次身份 + QNAME`，因此不同来源中同名的 QNAME 永远不会合并成同一份证据。
+同一次运行中重复列出完全相同的批次文件只会计入一次，中途保存后再次导入
+同一批也不会抬高独立支持数。
+
 ## 版本间差异比较
 
 `compare` 按稳定变异身份对齐两个版本的候选，区分**新增 / 消失 /
@@ -65,6 +71,40 @@
 方向解释规则（analysis_version/参数）变化，或两者同时变化。对两个版本
 都存在的候选，报告把各自版本的支持/反对证据（含共享片段与软截断
 留下的原始记录）并排列出，**绝不跨版本合并或拼接支持计数**。
+
+## 共享歧义与临时采用
+
+同一原始片段若在同一参考区间产生多个互斥候选，会进入证据台账的
+`ambiguity_groups`，候选支持数同时列成：
+
+- `independent_alt_fragments`：只支持该候选的片段；
+- `shared_ambiguous_alt_fragments`：在多个互斥候选间共享的歧义片段；
+- `alt_fragments`：观测到该候选 ALT 的总片段数，仅作原始观测，不把共享
+  片段重复累加成额外独立证据。
+
+相隔较远、可共存的多个变异不在同一区间，不算互斥歧义。片段级来源保存在
+`evidence_ledger.json` 与 `candidates.json` 的 `evidence_ledger` 中，含
+片段 UID、原始 QNAME、批次标签/ID、候选 ID、歧义组和批次哈希。
+
+可在不修改不可变分析版本的前提下临时采用一种解释：
+
+- `variant-pipeline adopt --outdir OUT --version vN --variant ID`
+  保存人工选择；已有不同人工选择不会被覆盖；
+- `variant-pipeline what-if --outdir OUT --version vN [--variant ID ...]`
+  查看共享片段被分配或移出后各候选的投影支持；
+- `variant-pipeline withdraw --outdir OUT --version vN --variant ID`
+  撤回临时选择，原始 `runs/vN/` 不发生任何改写。
+
+比较两个规则版本时，各自的采用决定放在比较结果的
+`adoption_decisions` 中分别保留。导出版本会包含结果哈希、
+`evidence_ledger.json`、完整选择快照 `selection_snapshot.json`，以及该版本
+自己的 `selected_interpretation.json`，足以复核每个共享片段来自哪个批次、
+被分配给了哪一种解释。
+
+加入新批次后，`compare` 按稳定片段 UID 对账，把旧歧义分为
+`resolved_ambiguous_fragments` 与 `persistent_ambiguous_fragments`，并单列新
+出现的 `new_ambiguous_fragments`；同名但来源不同的片段会列入
+`same_qname_distinct_source_fragments`，不会误判为同一证据。
 
 ## 输出
 
@@ -75,6 +115,7 @@
 
 每个版本目录 `runs/vNNNN/` 内含：
 - `candidates.json`：完整结构化结果（含稳定变异身份，供注释阶段 join）
+- `evidence_ledger.json`：片段来源、批次、候选和共享歧义关系台账
 - `candidates.tsv`：候选表
 - `coverage.tsv`：逐位片段深度
 - `report.txt`：中文可读报告，末尾单列覆盖不足区间

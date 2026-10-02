@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import json
 
+from .selection import load_selections
 from .store import RunStore, VersionInfo
 
 SUPPORT_FIELDS = (
     "alt_fragments",
+    "independent_alt_fragments",
+    "shared_ambiguous_alt_fragments",
     "forward",
     "reverse",
     "low_quality_alt_fragments",
@@ -36,6 +39,44 @@ def _load_payload(info: VersionInfo) -> dict:
 
 def _candidate_map(payload: dict) -> dict:
     return {c["variant_id"]: c for c in payload.get("candidates", [])}
+
+
+def _ledger_index(payload: dict) -> dict:
+    return {
+        r["fragment_uid"]: r
+        for r in payload.get("evidence_ledger", {}).get("fragment_records", [])
+    }
+
+
+def _same_qname_other_source(uid: str, old: dict, new: dict) -> bool:
+    current = new[uid]
+    return any(
+        record.get("qname") == current.get("qname")
+        and record.get("source_batch_id") != current.get("source_batch_id")
+        for record in old.values()
+    )
+
+
+def _ambiguity_reconciliation(from_payload: dict, to_payload: dict) -> dict:
+    old = _ledger_index(from_payload)
+    new = _ledger_index(to_payload)
+    shared = old.keys() & new.keys()
+    old_ambiguous = {k for k, r in old.items() if r.get("ambiguous_between")}
+    new_ambiguous = {k for k, r in new.items() if r.get("ambiguous_between")}
+    return {
+        "persistent_ambiguous_fragments": sorted(
+            old_ambiguous & new_ambiguous),
+        "resolved_ambiguous_fragments": sorted(
+            k for k in shared & old_ambiguous if k not in new_ambiguous),
+        "new_ambiguous_fragments": sorted(new_ambiguous - old_ambiguous),
+        "same_qname_distinct_source_fragments": sorted(
+            k for k in new
+            if k not in old and _same_qname_other_source(k, old, new)),
+        "from_duplicate_imports_skipped": from_payload.get(
+            "evidence_ledger", {}).get("duplicate_imports_skipped", []),
+        "to_duplicate_imports_skipped": to_payload.get(
+            "evidence_ledger", {}).get("duplicate_imports_skipped", []),
+    }
 
 
 def attribute_cause(from_info: VersionInfo, to_info: VersionInfo) -> dict:
@@ -105,9 +146,12 @@ def compare_versions(store: RunStore, from_version: str,
     """Diff two published versions; both are verified before reading."""
     from_info = store.verify(from_version)
     to_info = store.verify(to_version)
-    from_cands = _candidate_map(_load_payload(from_info))
-    to_cands = _candidate_map(_load_payload(to_info))
     attribution = attribute_cause(from_info, to_info)
+    from_payload = _load_payload(from_info)
+    to_payload = _load_payload(to_info)
+    from_cands = _candidate_map(from_payload)
+    to_cands = _candidate_map(to_payload)
+    decisions = load_selections(store).get("versions", {})
 
     added, removed, changed = [], [], []
     for variant_id in sorted(to_cands):
@@ -150,6 +194,12 @@ def compare_versions(store: RunStore, from_version: str,
             "shared_unchanged": len(from_cands.keys() & to_cands.keys())
             - len(changed),
         },
+        "adoption_decisions": {
+            from_version: decisions.get(from_version, {}).get("adopted", {}),
+            to_version: decisions.get(to_version, {}).get("adopted", {}),
+        },
+        "ambiguity_reconciliation": _ambiguity_reconciliation(
+            from_payload, to_payload),
     }
 
 
@@ -179,6 +229,20 @@ def render_diff_text(diff: dict) -> str:
         f"支持变化={s['changed']} 不变={s['shared_unchanged']}"
     )
     lines.append("")
+    reconciliation = diff["ambiguity_reconciliation"]
+    lines.append("共享歧义对账 (按来源批次+QNAME识别同一原始片段)")
+    lines.append("-" * 68)
+    lines.append("仍需保留: " + (", ".join(
+        reconciliation["persistent_ambiguous_fragments"]) or "无"))
+    lines.append("已解决: " + (", ".join(
+        reconciliation["resolved_ambiguous_fragments"]) or "无"))
+    lines.append("新增歧义: " + (", ".join(
+        reconciliation["new_ambiguous_fragments"]) or "无"))
+    if reconciliation["same_qname_distinct_source_fragments"]:
+        lines.append("注意: 以下同名片段来源不同，未合并: "
+                     + ", ".join(
+                         reconciliation["same_qname_distinct_source_fragments"]))
+    lines.append("")
     for entry in diff["added"]:
         lines.append(f"[新增] {entry['variant_id']} (归因: {cause})")
         lines.append(f"  新版本证据: {json.dumps(entry['to'], ensure_ascii=False)}")
@@ -190,4 +254,3 @@ def render_diff_text(diff: dict) -> str:
         for field, vals in entry["changes"].items():
             lines.append(f"  {field}: {vals['from']} -> {vals['to']}")
     return "\n".join(lines) + "\n"
-

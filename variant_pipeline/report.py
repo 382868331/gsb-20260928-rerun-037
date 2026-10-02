@@ -17,7 +17,8 @@ from .config import RunConfig
 
 TSV_COLUMNS = [
     "variant_id", "chrom", "pos", "ref", "alt", "kind", "status",
-    "confidence", "alt_fragments", "ref_fragments", "other_alt_fragments",
+    "confidence", "alt_fragments", "independent_alt_fragments",
+    "shared_ambiguous_alt_fragments", "ref_fragments", "other_alt_fragments",
     "alt_forward", "alt_reverse", "strand_bias_p",
     "low_quality_alt_fragments", "conflicting_overlap_fragments",
     "depth", "passing_depth", "informative_depth", "alt_fraction",
@@ -66,6 +67,7 @@ def build_payload(cfg: RunConfig, result: CallResult) -> dict:
             "reads_path": cfg.reads_path,
         },
         "candidates": [candidate_dict(ev) for ev in result.candidates],
+        "evidence_ledger": result.evidence_ledger,
         "low_coverage_regions": [
             {"chrom": c, "start": s, "end": e, "min_fragment_depth": d}
             for c, s, e, d in result.low_coverage
@@ -116,6 +118,8 @@ def render_text_report(payload: dict) -> str:
         )
         lines.append(
             f"  支持: ALT片段={s['alt_fragments']} "
+            f"(独立={s['independent_alt_fragments']}, "
+            f"共享歧义={s['shared_ambiguous_alt_fragments']}) "
             f"(正向={s['forward']}, 反向={s['reverse']}) "
             f"ALT比例={s['alt_fraction_of_informative']} "
             f"平均碱基质量={s['mean_base_quality']} "

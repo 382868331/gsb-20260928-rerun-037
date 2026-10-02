@@ -29,12 +29,39 @@ class CallResult:
     candidates: list[CandidateEvidence]
     coverage: list[CoveragePosition]
     low_coverage: list[tuple[str, int, int, int]]  # chrom,start,end,min_depth
+    evidence_ledger: dict
 
 
 def _spans(frag: Fragment, chrom: str, anchor: int) -> bool:
     if chrom not in frag.chroms and len(frag.chroms) > 1:
         return False
     return any(start <= anchor <= end for start, end in frag.covered)
+
+
+def _variant_span(variant: Variant) -> tuple[str, int, int]:
+    return variant.chrom, variant.pos, variant.pos + len(variant.ref) - 1
+
+
+def _overlaps(a: Variant, b: Variant) -> bool:
+    ca, sa, ea = _variant_span(a)
+    cb, sb, eb = _variant_span(b)
+    return ca == cb and sa <= eb and sb <= ea
+
+
+def _overlapping_group(keys: set[tuple], current: tuple,
+                       variant_lookup: dict[tuple, Variant]) -> set[tuple]:
+    group = {current}
+    changed = True
+    while changed:
+        changed = False
+        for key in keys:
+            if key in group:
+                continue
+            if any(_overlaps(variant_lookup[key], variant_lookup[member])
+                   for member in group):
+                group.add(key)
+                changed = True
+    return group
 
 
 def _fragment_state(frag: Fragment, key: tuple, anchor: int) -> str:
@@ -87,10 +114,12 @@ def call_variants(
 ) -> CallResult:
     grouped: dict[tuple, list] = {}
     variant_lookup: dict[tuple, Variant] = {}
+    fragment_candidates: dict[str, set[tuple]] = {}
     for frag in fragments:
         for key, obs in frag.alt.items():
             grouped.setdefault(key, []).append(obs)
             variant_lookup[key] = obs.variant
+            fragment_candidates.setdefault(frag.uid or frag.qname, set()).add(key)
 
     candidates: list[CandidateEvidence] = []
     for key, observations in grouped.items():
@@ -99,6 +128,7 @@ def call_variants(
         chrom = variant.chrom
 
         n_alt_pass = n_alt_low = n_ref = n_other = n_conflict = 0
+        n_independent = n_shared = 0
         fwd_alt = rev_alt = fwd_ref = rev_ref = 0
         depth = passing_depth = 0
         quals: list[int] = []
@@ -113,6 +143,14 @@ def call_variants(
             passing_depth += 1
             if state == "alt_pass":
                 n_alt_pass += 1
+                passing_candidates = {k for k, obs in frag.alt.items()
+                                      if not obs.low_quality}
+                conflicting_group = _overlapping_group(
+                    passing_candidates, key, variant_lookup)
+                if len(conflicting_group) == 1:
+                    n_independent += 1
+                else:
+                    n_shared += 1
                 quals.extend(frag.alt[key].base_quals)
                 if frag.strand == "R":
                     rev_alt += 1
@@ -144,6 +182,8 @@ def call_variants(
             alt=variant.alt,
             kind=variant.kind,
             alt_fragments=n_alt_pass + n_alt_low,
+            independent_alt_fragments=n_independent,
+            shared_ambiguous_alt_fragments=n_shared,
             alt_forward=fwd_alt,
             alt_reverse=rev_alt,
             alt_mean_base_quality=round(mean_q, 2),
@@ -170,7 +210,48 @@ def call_variants(
     candidates.sort(key=lambda e: (e.chrom, e.pos, e.alt))
     depth_maps = _depth_arrays(fragments, references)
     coverage, low = _coverage_report(depth_maps, params.low_coverage_depth)
-    return CallResult(candidates=candidates, coverage=coverage, low_coverage=low)
+    ledger = _build_evidence_ledger(fragments, variant_lookup, fragment_candidates)
+    return CallResult(
+        candidates=candidates,
+        coverage=coverage,
+        low_coverage=low,
+        evidence_ledger=ledger,
+    )
+
+
+def _build_evidence_ledger(
+    fragments: list[Fragment],
+    variant_lookup: dict[tuple, Variant],
+    fragment_candidates: dict[str, set[tuple]],
+) -> dict:
+    records = {}
+    for frag in fragments:
+        identity = frag.uid or frag.qname
+        keys = fragment_candidates.get(identity, set())
+        candidate_ids = sorted(variant_lookup[key].vid for key in keys)
+        visited = set()
+        ambiguity_groups = []
+        for key in keys:
+            if key in visited:
+                continue
+            group = _overlapping_group(keys, key, variant_lookup)
+            visited |= group
+            if len(group) > 1:
+                ambiguity_groups.append(
+                    sorted(variant_lookup[k].vid for k in group))
+        records[identity] = {
+            "fragment_uid": identity,
+            "qname": frag.qname,
+            "source_batch_id": frag.source_batch_id,
+            "source_label": frag.source_label,
+            "candidate_variant_ids": candidate_ids,
+            "ambiguity_groups": ambiguity_groups,
+            "ambiguous_between": bool(ambiguity_groups),
+        }
+    return {
+        "schema": "fragment-evidence-ledger-v1",
+        "fragment_records": [records[k] for k in sorted(records)],
+    }
 
 
 def _coverage_report(

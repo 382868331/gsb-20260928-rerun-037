@@ -35,6 +35,7 @@ VERSION_PATTERN = re.compile(r"^v(\d{4,})$")
 
 OUTPUT_FILENAMES = (
     "candidates.json",
+    "evidence_ledger.json",
     "candidates.tsv",
     "coverage.tsv",
     "report.txt",
@@ -78,7 +79,7 @@ class RunStore:
     # -- publishing ------------------------------------------------------
 
     def fingerprint(self, *, config_dict: dict, reads_path: str,
-                    fasta_path: str) -> str:
+                    fasta_path: str, reads_paths: list[str] | None = None) -> str:
         """Stable identity of one analysis request.
 
         Binds the exact inputs (reads + reference bytes), the full run
@@ -91,6 +92,7 @@ class RunStore:
                 "package_version": __version__,
                 "config": config_dict,
                 "reads_sha256": sha256_file(reads_path),
+                "reads_sha256_set": [sha256_file(p) for p in (reads_paths or [])],
                 "fasta_sha256": sha256_file(fasta_path),
             },
             sort_keys=True,
@@ -106,7 +108,8 @@ class RunStore:
 
     def publish(self, outputs: dict[str, str | Path], *,
                 config_dict: dict, reads_path: str, fasta_path: str,
-                fingerprint: str) -> VersionInfo:
+                fingerprint: str,
+                reads_paths: list[str] | None = None) -> VersionInfo:
         """Publish a new version atomically; never touches old versions.
 
         ``outputs`` maps output filenames to the staged file paths to
@@ -138,6 +141,9 @@ class RunStore:
                         config_dict, sort_keys=True, ensure_ascii=False)),
                     "reads_path": str(reads_path),
                     "reads_sha256": sha256_file(reads_path),
+                    "reads_paths": [str(p) for p in (reads_paths or [])],
+                    "reads_sha256_set": [
+                        sha256_file(p) for p in (reads_paths or [])],
                     "fasta_path": str(fasta_path),
                     "fasta_sha256": sha256_file(fasta_path),
                 },
@@ -208,8 +214,21 @@ class RunStore:
         if dest.exists() and any(dest.iterdir()):
             raise StoreError(f"export destination is not empty: {dest}")
         dest.mkdir(parents=True, exist_ok=True)
-        for name in list(OUTPUT_FILENAMES) + [MANIFEST_FILENAME]:
+        for name in list(info.manifest.get("outputs", {})) + [MANIFEST_FILENAME]:
             shutil.copyfile(info.path / name, dest / name)
+        selection_file = self.root / "selections.json"
+        if selection_file.is_file():
+            shutil.copyfile(selection_file, dest / "selection_snapshot.json")
+            selections = json.loads(selection_file.read_text(encoding="utf-8"))
+            decision = selections.get("versions", {}).get(version, {})
+            (dest / "selected_interpretation.json").write_text(
+                json.dumps({
+                    "schema": "selected-interpretation-v1",
+                    "version": version,
+                    "decision": decision,
+                }, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
         return dest
 
     # -- internals -------------------------------------------------------
@@ -234,4 +253,3 @@ class RunStore:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(entries, indent=2) + "\n")
         os.replace(tmp, index_path)
-

@@ -40,12 +40,18 @@ class Observation:
     base_quals: tuple[int, ...]
     strand: str            # fragment strand: 'F' forward / 'R' reverse
     low_quality: bool      # any supporting base below the quality gate
+    fragment_uid: str = ""
+    source_batch_id: str = ""
+    source_label: str = ""
 
 
 @dataclass
 class Fragment:
     qname: str
     strand: str
+    uid: str = ""
+    source_batch_id: str = ""
+    source_label: str = ""
     chroms: set[str] = field(default_factory=set)
     alt: dict[tuple, Observation] = field(default_factory=dict)
     ref_positions: set[int] = field(default_factory=set)
@@ -280,13 +286,20 @@ def build_fragments(
     references: dict[str, Reference],
     min_base_quality: int,
     min_mapping_quality: int,
+    batch_id: str = "input",
+    batch_label: str = "input",
 ) -> list[Fragment]:
     grouped: dict[str, list[AlignmentRecord]] = {}
+    seen_records: set[AlignmentRecord] = set()
     for rec in records:
-        grouped.setdefault(rec.qname, []).append(rec)
+        if rec in seen_records:
+            continue
+        seen_records.add(rec)
+        grouped.setdefault(f"{batch_id}\0{rec.qname}", []).append(rec)
 
     fragments: list[Fragment] = []
-    for qname, mates in grouped.items():
+    for grouped_qname, mates in grouped.items():
+        qname = mates[0].qname
         usable = [m for m in mates if m.mapq >= min_mapping_quality]
         if not usable:
             continue
@@ -294,6 +307,9 @@ def build_fragments(
         frag = Fragment(
             qname=qname,
             strand="R" if read1.is_reverse else "F",
+            uid=grouped_qname,
+            source_batch_id=batch_id,
+            source_label=batch_label,
             chroms={m.rname for m in usable if m.rname in references},)
         frag.mapq_max = max(m.mapq for m in usable)
 
@@ -326,6 +342,9 @@ def build_fragments(
                         base_quals=bquals,
                         strand=call.strand,
                         low_quality=low_q,
+                        fragment_uid=grouped_qname,
+                        source_batch_id=batch_id,
+                        source_label=batch_label,
                     )
                 else:
                     if _mean(bquals) > _mean(existing.base_quals):
