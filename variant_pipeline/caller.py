@@ -7,7 +7,7 @@ lower confidence) but never count as passing support.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .config import Parameters
 from .evidence import CandidateEvidence, fisher_two_sided, score_candidate
@@ -29,6 +29,12 @@ class CallResult:
     candidates: list[CandidateEvidence]
     coverage: list[CoveragePosition]
     low_coverage: list[tuple[str, int, int, int]]  # chrom,start,end,min_depth
+    ambiguity_groups: list[dict] = field(default_factory=list)
+    fragment_sources: list[dict] = field(default_factory=list)
+
+
+def _overlaps(a: Variant, b: Variant) -> bool:
+    return a.chrom == b.chrom and a.pos < b.pos + len(b.ref) and b.pos < a.pos + len(a.ref)
 
 
 def _spans(frag: Fragment, chrom: str, anchor: int) -> bool:
@@ -85,6 +91,16 @@ def call_variants(
     references: dict[str, Reference],
     params: Parameters,
 ) -> CallResult:
+    fragment_sources = [
+        {
+            "fragment_id": frag.evidence_id,
+            "qname": frag.qname,
+            "source_id": frag.source_id,
+            "source_name": frag.source_name or frag.source_id,
+            "batch_id": frag.batch_id or frag.source_id,
+        }
+        for frag in fragments
+    ]
     grouped: dict[tuple, list] = {}
     variant_lookup: dict[tuple, Variant] = {}
     for frag in fragments:
@@ -99,9 +115,12 @@ def call_variants(
         chrom = variant.chrom
 
         n_alt_pass = n_alt_low = n_ref = n_other = n_conflict = 0
+        n_independent = n_shared = 0
         fwd_alt = rev_alt = fwd_ref = rev_ref = 0
         depth = passing_depth = 0
         quals: list[int] = []
+        fragment_ids: list[str] = []
+        shared_with: dict[str, list[str]] = {}
 
         for frag in fragments:
             if not _spans(frag, chrom, anchor):
@@ -113,6 +132,17 @@ def call_variants(
             passing_depth += 1
             if state == "alt_pass":
                 n_alt_pass += 1
+                fragment_ids.append(frag.evidence_id)
+                other_ids = [
+                    other.variant.vid
+                    for other_key, other in frag.alt.items()
+                    if other_key != key and _overlaps(variant, other.variant)
+                ]
+                if other_ids:
+                    n_shared += 1
+                    shared_with[frag.evidence_id] = sorted(set(other_ids))
+                else:
+                    n_independent += 1
                 quals.extend(frag.alt[key].base_quals)
                 if frag.strand == "R":
                     rev_alt += 1
@@ -120,6 +150,17 @@ def call_variants(
                     fwd_alt += 1
             elif state == "alt_low":
                 n_alt_low += 1
+                fragment_ids.append(frag.evidence_id)
+                other_ids = [
+                    other.variant.vid
+                    for other_key, other in frag.alt.items()
+                    if other_key != key and _overlaps(variant, other.variant)
+                ]
+                if other_ids:
+                    n_shared += 1
+                    shared_with[frag.evidence_id] = sorted(set(other_ids))
+                else:
+                    n_independent += 1
             elif state == "ref":
                 n_ref += 1
                 if frag.strand == "R":
@@ -148,6 +189,9 @@ def call_variants(
             alt_reverse=rev_alt,
             alt_mean_base_quality=round(mean_q, 2),
             low_quality_alt_fragments=n_alt_low,
+            alt_fragment_ids=fragment_ids,
+            independent_alt_fragments=n_independent,
+            shared_ambiguous_alt_fragments=n_shared,
             ref_fragments=n_ref,
             other_alt_fragments=n_other,
             conflicting_overlap_fragments=n_conflict,
@@ -165,12 +209,64 @@ def call_variants(
             strand_bias_p_threshold=params.strand_bias_p_threshold,
             low_quality_fraction_threshold=params.low_quality_fraction_threshold,
         )
+        ev.shared_with = shared_with
         candidates.append(ev)
 
     candidates.sort(key=lambda e: (e.chrom, e.pos, e.alt))
     depth_maps = _depth_arrays(fragments, references)
     coverage, low = _coverage_report(depth_maps, params.low_coverage_depth)
-    return CallResult(candidates=candidates, coverage=coverage, low_coverage=low)
+    ambiguity_groups = _ambiguity_groups(candidates)
+    return CallResult(
+        candidates=candidates,
+        coverage=coverage,
+        low_coverage=low,
+        ambiguity_groups=ambiguity_groups,
+        fragment_sources=fragment_sources,
+    )
+
+
+def _ambiguity_groups(candidates: list[CandidateEvidence]) -> list[dict]:
+    adjacency = {ev.variant_id: set() for ev in candidates}
+    fragment_members: dict[str, set[str]] = {}
+    for ev in candidates:
+        for fragment_id, others in getattr(ev, "shared_with", {}).items():
+            adjacency.setdefault(ev.variant_id, set()).update(others)
+            for other in others:
+                adjacency.setdefault(other, set()).add(ev.variant_id)
+            fragment_members.setdefault(fragment_id, {ev.variant_id}).add(ev.variant_id)
+            fragment_members[fragment_id].update(others)
+
+    seen: set[str] = set()
+    groups: list[dict] = []
+    for variant_id in sorted(adjacency):
+        if variant_id in seen:
+            continue
+        stack = [variant_id]
+        members: set[str] = set()
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            members.add(current)
+            stack.extend(adjacency.get(current, set()) - seen)
+        if len(members) < 2:
+            continue
+        records = []
+        for fragment_id, linked in sorted(fragment_members.items()):
+            if linked & members:
+                records.append({
+                    "fragment_id": fragment_id,
+                    "supports": sorted(linked & members),
+                })
+        groups.append({
+            "group_id": f"ambig-{len(groups) + 1:04d}",
+            "candidate_variant_ids": sorted(members),
+            "shared_fragments": records,
+            "shared_fragment_count": len(records),
+            "resolution": "ambiguous",
+        })
+    return groups
 
 
 def _coverage_report(

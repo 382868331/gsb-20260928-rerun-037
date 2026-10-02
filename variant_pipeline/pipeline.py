@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .store import sha256_file
+
 from .caller import CallResult, call_variants
 from .config import RunConfig
 from .fasta import read_fasta
 from .samio import build_fragments, read_sam
 
 
-def run(config: RunConfig, reads_path: str | None = None) -> CallResult:
+def load_fragments(config: RunConfig, reads_path: str | None = None):
     reads = reads_path or config.reads_path
     if not reads:
         raise ValueError("no reads path: set reads_path in config or pass --reads")
@@ -20,10 +22,42 @@ def run(config: RunConfig, reads_path: str | None = None) -> CallResult:
             f"reference name {config.reference.name!r} not found in FASTA"
         )
     _header_lengths, records = read_sam(Path(reads))
+    source_id = sha256_file(reads)[:16]
     fragments = build_fragments(
         records,
         references,
         min_base_quality=config.parameters.min_base_quality,
         min_mapping_quality=config.parameters.min_mapping_quality,
+        source_id=source_id,
+        source_name=Path(reads).name,
+        batch_id=source_id,
     )
+    return fragments, references
+
+
+def run(config: RunConfig, reads_path: str | None = None) -> CallResult:
+    fragments, references = load_fragments(config, reads_path)
     return call_variants(fragments, references, config.parameters)
+
+
+def run_many(config: RunConfig, read_paths: list[str]) -> CallResult:
+    references = read_fasta(config.reference.fasta_path)
+    all_fragments = []
+    seen_fragment_ids: set[str] = set()
+    for index, reads in enumerate(read_paths, start=1):
+        _header_lengths, records = read_sam(Path(reads))
+        source_id = sha256_file(reads)[:16]
+        fragments = build_fragments(
+            records,
+            references,
+            min_base_quality=config.parameters.min_base_quality,
+            min_mapping_quality=config.parameters.min_mapping_quality,
+            source_id=source_id,
+            source_name=Path(reads).name,
+            batch_id=f"batch-{index:04d}-{source_id}",
+        )
+        for fragment in fragments:
+            if fragment.evidence_id not in seen_fragment_ids:
+                seen_fragment_ids.add(fragment.evidence_id)
+                all_fragments.append(fragment)
+    return call_variants(all_fragments, references, config.parameters)

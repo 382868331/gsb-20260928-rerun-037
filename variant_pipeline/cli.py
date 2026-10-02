@@ -11,6 +11,12 @@ from pathlib import Path
 from . import __version__
 from .config import RunConfig
 from .diff import compare_versions, render_diff_text
+from .interpretation import (
+    load_selection,
+    save_selection,
+    selected_view,
+    withdraw_selection,
+)
 from .pipeline import run
 from .report import (
     build_payload,
@@ -35,6 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
         "call", help="analyse and publish a new immutable result version")
     call.add_argument("--config", required=True, help="run config JSON path")
     call.add_argument("--reads", help="SAM path (overrides config reads_path)")
+    call.add_argument("--extra-reads", action="append", default=[],
+                      help="additional SAM batch; repeatable")
     call.add_argument("--outdir", required=True,
                       help="versioned run store root directory")
     call.add_argument("--force", action="store_true",
@@ -51,6 +59,23 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--to", dest="to_version", required=True)
     compare.add_argument("--json-out",
                          help="also write the structured diff JSON here")
+
+    select = sub.add_parser(
+        "select", help="save a provisional candidate interpretation")
+    select.add_argument("--outdir", required=True)
+    select.add_argument("--version", required=True)
+    select.add_argument("--variant", required=True)
+
+    withdraw = sub.add_parser(
+        "withdraw", help="withdraw a provisional interpretation choice")
+    withdraw.add_argument("--outdir", required=True)
+    withdraw.add_argument("--version", required=True)
+
+    view = sub.add_parser(
+        "selected-view", help="show evidence under a provisional choice")
+    view.add_argument("--outdir", required=True)
+    view.add_argument("--version", required=True)
+    view.add_argument("--json-out")
 
     export = sub.add_parser(
         "export", help="export a historical version after integrity check")
@@ -81,6 +106,7 @@ def _cmd_call(args) -> int:
         config_dict=config_dict,
         reads_path=reads,
         fasta_path=cfg.reference.fasta_path,
+        extra_read_paths=args.extra_reads,
     )
     if not args.force:
         duplicate = store.find_duplicate(fingerprint)
@@ -91,7 +117,12 @@ def _cmd_call(args) -> int:
             print(f"          如需强制生成新版本，请加 --force")
             return 0
 
-    result = run(cfg, args.reads)
+    read_paths = [reads] + args.extra_reads
+    if len(read_paths) == 1:
+        result = run(cfg, reads)
+    else:
+        from .pipeline import run_many
+        result = run_many(cfg, read_paths)
     payload = build_payload(cfg, result)
     text = render_text_report(payload)
     with tempfile.TemporaryDirectory(
@@ -108,6 +139,7 @@ def _cmd_call(args) -> int:
             config_dict=config_dict,
             reads_path=reads,
             fasta_path=cfg.reference.fasta_path,
+            extra_read_paths=args.extra_reads,
             fingerprint=fingerprint,
         )
     print(text)
@@ -133,6 +165,8 @@ def _cmd_list(args) -> int:
               f"	{manifest.get('analysis_version', '-')}"
               f"	sample={sample_id}")
     return 0
+
+
 def _cmd_compare(args) -> int:
     store = RunStore(args.outdir)
     diff = compare_versions(store, args.from_version, args.to_version)
@@ -142,6 +176,33 @@ def _cmd_compare(args) -> int:
             json.dumps(diff, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")
         print(f"[diff] {args.json_out}")
+    return 0
+
+
+def _cmd_select(args) -> int:
+    selection = save_selection(RunStore(args.outdir), args.version, args.variant)
+    print(f"[selection] 已临时选择 {selection.selected_variant_id}; "
+          f"原分析版本 {selection.base_version} 未修改")
+    return 0
+
+
+def _cmd_withdraw(args) -> int:
+    selection = withdraw_selection(RunStore(args.outdir), args.version)
+    print(f"[withdraw] 已撤回 {selection.base_version} 的临时选择，原版本未修改")
+    return 0
+
+
+def _cmd_selected_view(args) -> int:
+    store = RunStore(args.outdir)
+    decision = load_selection(store, args.version)
+    if decision is None:
+        raise StoreError(f"no provisional selection for {args.version}")
+    payload = selected_view(store.verify(args.version),
+                            decision["selected_variant_id"])
+    text = json.dumps(payload, indent=2, ensure_ascii=False)
+    print(text)
+    if args.json_out:
+        Path(args.json_out).write_text(text + "\n", encoding="utf-8")
     return 0
 
 
@@ -173,6 +234,9 @@ def main(argv: list[str] | None = None) -> int:
         "call": _cmd_call,
         "list": _cmd_list,
         "compare": _cmd_compare,
+        "select": _cmd_select,
+        "withdraw": _cmd_withdraw,
+        "selected-view": _cmd_selected_view,
         "export": _cmd_export,
         "verify": _cmd_verify,
     }
@@ -181,4 +245,3 @@ def main(argv: list[str] | None = None) -> int:
     except (StoreError, VerificationError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-

@@ -46,12 +46,20 @@ class Observation:
 class Fragment:
     qname: str
     strand: str
+    source_id: str = "default"
+    source_name: str | None = None
+    batch_id: str | None = None
     chroms: set[str] = field(default_factory=set)
     alt: dict[tuple, Observation] = field(default_factory=dict)
     ref_positions: set[int] = field(default_factory=set)
     conflict_positions: set[int] = field(default_factory=set)
     covered: list[tuple[int, int]] = field(default_factory=list)
     mapq_max: int = 0
+
+    @property
+    def evidence_id(self) -> str:
+        """Stable identity that keeps same qname from different sources apart."""
+        return f"{self.source_id}::{self.qname}"
 
 
 def reverse_complement(seq: str) -> str:
@@ -280,13 +288,16 @@ def build_fragments(
     references: dict[str, Reference],
     min_base_quality: int,
     min_mapping_quality: int,
+    source_id: str = "default",
+    source_name: str | None = None,
+    batch_id: str | None = None,
 ) -> list[Fragment]:
-    grouped: dict[str, list[AlignmentRecord]] = {}
+    grouped: dict[tuple[str, str], list[AlignmentRecord]] = {}
     for rec in records:
-        grouped.setdefault(rec.qname, []).append(rec)
+        grouped.setdefault((source_id, rec.qname), []).append(rec)
 
     fragments: list[Fragment] = []
-    for qname, mates in grouped.items():
+    for (_record_source, qname), mates in grouped.items():
         usable = [m for m in mates if m.mapq >= min_mapping_quality]
         if not usable:
             continue
@@ -294,6 +305,9 @@ def build_fragments(
         frag = Fragment(
             qname=qname,
             strand="R" if read1.is_reverse else "F",
+            source_id=source_id,
+            source_name=source_name,
+            batch_id=batch_id,
             chroms={m.rname for m in usable if m.rname in references},)
         frag.mapq_max = max(m.mapq for m in usable)
 

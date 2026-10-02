@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import json
 
+from .interpretation import load_selection
 from .store import RunStore, VersionInfo
 
 SUPPORT_FIELDS = (
     "alt_fragments",
+    "independent_alt_fragments",
+    "shared_ambiguous_alt_fragments",
     "forward",
     "reverse",
     "low_quality_alt_fragments",
@@ -107,6 +110,8 @@ def compare_versions(store: RunStore, from_version: str,
     to_info = store.verify(to_version)
     from_cands = _candidate_map(_load_payload(from_info))
     to_cands = _candidate_map(_load_payload(to_info))
+    from_payload = _load_payload(from_info)
+    to_payload = _load_payload(to_info)
     attribution = attribute_cause(from_info, to_info)
 
     added, removed, changed = [], [], []
@@ -136,6 +141,7 @@ def compare_versions(store: RunStore, from_version: str,
                 "from": _evidence_snapshot(from_cands[variant_id]),
                 "to": _evidence_snapshot(to_cands[variant_id]),
             })
+    ambiguity_tracking = _ambiguity_tracking(from_payload, to_payload)
     return {
         "from_version": from_version,
         "to_version": to_version,
@@ -143,6 +149,11 @@ def compare_versions(store: RunStore, from_version: str,
         "added": added,
         "removed": removed,
         "changed": changed,
+        "ambiguity_tracking": ambiguity_tracking,
+        "adoption_decisions": {
+            "from": load_selection(store, from_version),
+            "to": load_selection(store, to_version),
+        },
         "summary": {
             "added": len(added),
             "removed": len(removed),
@@ -150,6 +161,64 @@ def compare_versions(store: RunStore, from_version: str,
             "shared_unchanged": len(from_cands.keys() & to_cands.keys())
             - len(changed),
         },
+    }
+
+
+def _ambiguity_map(payload: dict) -> dict[str, set[str]]:
+    out: dict[str, set[str]] = {}
+    for group in payload.get("ambiguity_groups", []):
+        for record in group.get("shared_fragments", []):
+            out.setdefault(record["fragment_id"], set()).update(
+                record.get("supports", []))
+    return out
+
+
+def _fragment_source_index(payload: dict) -> dict[str, dict]:
+    return {
+        item["fragment_id"]: item
+        for item in payload.get("fragment_sources", [])
+    }
+
+
+def _ambiguity_tracking(from_payload: dict, to_payload: dict) -> dict:
+    old = _ambiguity_map(from_payload)
+    new = _ambiguity_map(to_payload)
+    sources = _fragment_source_index(to_payload)
+    old_sources = _fragment_source_index(from_payload)
+
+    def record(fragment_id: str, members: set[str], side_sources: dict) -> dict:
+        source = side_sources.get(fragment_id, {})
+        return {
+            "fragment_id": fragment_id,
+            "source_id": source.get("source_id"),
+            "source_name": source.get("source_name"),
+            "qname": source.get("qname"),
+            "supports": sorted(members),
+        }
+
+    retained_ids = old.keys() & new.keys()
+    resolved_ids = old.keys() - new.keys()
+    introduced_ids = new.keys() - old.keys()
+    return {
+        "retained_ambiguities": [
+            record(fid, new[fid], sources) for fid in sorted(retained_ids)
+        ],
+        "resolved_ambiguities": [
+            record(fid, old[fid], old_sources) for fid in sorted(resolved_ids)
+        ],
+        "new_ambiguities": [
+            record(fid, new[fid], sources) for fid in sorted(introduced_ids)
+        ],
+        "summary": {
+            "retained": len(retained_ids),
+            "resolved": len(resolved_ids),
+            "introduced": len(introduced_ids),
+        },
+        "note": (
+            "Fragment identity includes source hash and qname; reuse across "
+            "candidates is tracked as shared ambiguity, not added independent "
+            "support."
+        ),
     }
 
 
@@ -179,6 +248,25 @@ def render_diff_text(diff: dict) -> str:
         f"支持变化={s['changed']} 不变={s['shared_unchanged']}"
     )
     lines.append("")
+    tracking = diff.get("ambiguity_tracking", {})
+    if tracking:
+        ts = tracking["summary"]
+        lines.append(
+            f"歧义追踪: 已解决={ts['resolved']} 仍保留={ts['retained']} "
+            f"新引入={ts['introduced']}"
+        )
+        for item in tracking.get("resolved_ambiguities", []):
+            lines.append(f"  [已解决] {item['fragment_id']} 原支持={','.join(item['supports'])}")
+        for item in tracking.get("retained_ambiguities", []):
+            lines.append(f"  [仍保留] {item['fragment_id']} 支持={','.join(item['supports'])}")
+        lines.append("")
+    decisions = diff.get("adoption_decisions", {})
+    lines.append(
+        "采用决定: "
+        f"{json.dumps(decisions.get('from'), ensure_ascii=False)} -> "
+        f"{json.dumps(decisions.get('to'), ensure_ascii=False)}"
+    )
+    lines.append("")
     for entry in diff["added"]:
         lines.append(f"[新增] {entry['variant_id']} (归因: {cause})")
         lines.append(f"  新版本证据: {json.dumps(entry['to'], ensure_ascii=False)}")
@@ -190,4 +278,3 @@ def render_diff_text(diff: dict) -> str:
         for field, vals in entry["changes"].items():
             lines.append(f"  {field}: {vals['from']} -> {vals['to']}")
     return "\n".join(lines) + "\n"
-

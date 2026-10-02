@@ -78,7 +78,8 @@ class RunStore:
     # -- publishing ------------------------------------------------------
 
     def fingerprint(self, *, config_dict: dict, reads_path: str,
-                    fasta_path: str) -> str:
+                    fasta_path: str,
+                    extra_read_paths: list[str] | tuple[str, ...] = ()) -> str:
         """Stable identity of one analysis request.
 
         Binds the exact inputs (reads + reference bytes), the full run
@@ -92,6 +93,10 @@ class RunStore:
                 "config": config_dict,
                 "reads_sha256": sha256_file(reads_path),
                 "fasta_sha256": sha256_file(fasta_path),
+                "extra_reads": [
+                    {"sha256": sha256_file(path)}
+                    for path in extra_read_paths
+                ],
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -106,7 +111,8 @@ class RunStore:
 
     def publish(self, outputs: dict[str, str | Path], *,
                 config_dict: dict, reads_path: str, fasta_path: str,
-                fingerprint: str) -> VersionInfo:
+                fingerprint: str,
+                extra_read_paths: list[str] | tuple[str, ...] = ()) -> VersionInfo:
         """Publish a new version atomically; never touches old versions.
 
         ``outputs`` maps output filenames to the staged file paths to
@@ -140,6 +146,13 @@ class RunStore:
                     "reads_sha256": sha256_file(reads_path),
                     "fasta_path": str(fasta_path),
                     "fasta_sha256": sha256_file(fasta_path),
+                    "extra_reads": [
+                        {
+                            "path": str(path),
+                            "sha256": sha256_file(path),
+                        }
+                        for path in extra_read_paths
+                    ],
                 },
                 "outputs": output_hashes,
             }
@@ -210,7 +223,37 @@ class RunStore:
         dest.mkdir(parents=True, exist_ok=True)
         for name in list(OUTPUT_FILENAMES) + [MANIFEST_FILENAME]:
             shutil.copyfile(info.path / name, dest / name)
+        audit = self.audit_sources(version)
+        (dest / "shared_evidence_audit.json").write_text(
+            json.dumps(audit, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
         return dest
+
+    def audit_sources(self, version: str) -> dict:
+        info = self.verify(version)
+        payload = json.loads(
+            (info.path / "candidates.json").read_text(encoding="utf-8"))
+        sources = {
+            item["fragment_id"]: item
+            for item in payload.get("fragment_sources", [])
+        }
+        groups = []
+        for group in payload.get("ambiguity_groups", []):
+            records = []
+            for item in group.get("shared_fragments", []):
+                records.append({
+                    **item,
+                    "source": sources.get(item["fragment_id"], {}),
+                })
+            groups.append({**group, "shared_fragments": records})
+        return {
+            "version": version,
+            "analysis_version": info.manifest.get("analysis_version"),
+            "inputs": info.manifest.get("inputs", {}),
+            "fragment_sources": payload.get("fragment_sources", []),
+            "ambiguity_groups": groups,
+        }
 
     # -- internals -------------------------------------------------------
 
@@ -234,4 +277,3 @@ class RunStore:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(entries, indent=2) + "\n")
         os.replace(tmp, index_path)
-

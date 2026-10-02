@@ -20,6 +20,7 @@ TSV_COLUMNS = [
     "confidence", "alt_fragments", "ref_fragments", "other_alt_fragments",
     "alt_forward", "alt_reverse", "strand_bias_p",
     "low_quality_alt_fragments", "conflicting_overlap_fragments",
+    "independent_alt_fragments", "shared_ambiguous_alt_fragments",
     "depth", "passing_depth", "informative_depth", "alt_fraction",
     "alt_mean_base_quality", "flags",
 ]
@@ -38,6 +39,14 @@ def candidate_dict(ev) -> dict:
         "score_components": ev.components,
         "flags": ev.flags,
         "supporting_evidence": ev.supporting_summary(),
+        "evidence_ambiguity": {
+            "independent_alt_fragments": ev.independent_alt_fragments,
+            "shared_ambiguous_alt_fragments": ev.shared_ambiguous_alt_fragments,
+            "shared_fragments": [
+                {"fragment_id": fid, "also_supports": vids}
+                for fid, vids in sorted(ev.shared_with.items())
+            ],
+        },
         "opposing_evidence": ev.opposing_summary(),
         "coverage": {
             "fragment_depth": ev.depth,
@@ -70,6 +79,8 @@ def build_payload(cfg: RunConfig, result: CallResult) -> dict:
             {"chrom": c, "start": s, "end": e, "min_fragment_depth": d}
             for c, s, e, d in result.low_coverage
         ],
+        "ambiguity_groups": result.ambiguity_groups,
+        "fragment_sources": result.fragment_sources,
     }
 
 
@@ -110,9 +121,15 @@ def render_text_report(payload: dict) -> str:
         s = cand["supporting_evidence"]
         o = cand["opposing_evidence"]
         cov = cand["coverage"]
+        amb = cand.get("evidence_ambiguity", {})
         lines.append(
             f"[{cand['status']}] {cand['variant_id']} ({cand['kind']}) "
             f"可信度={cand['confidence']}"
+        )
+        lines.append(
+            f"  证据归属: 独立支持={amb.get('independent_alt_fragments', 0)} "
+            f"共享歧义={amb.get('shared_ambiguous_alt_fragments', 0)}; "
+            "共享片段不得重复计为新增独立证据"
         )
         lines.append(
             f"  支持: ALT片段={s['alt_fragments']} "
@@ -136,6 +153,30 @@ def render_text_report(payload: dict) -> str:
             lines.append("  标记: " + ", ".join(cand["flags"]))
         lines.append("")
     low = payload["low_coverage_regions"]
+    lines.append("共享歧义片段 (独立支持与共享证据分列)")
+    lines.append("-" * 68)
+    groups = payload.get("ambiguity_groups", [])
+    if not groups:
+        lines.append("无")
+    else:
+        for group in groups:
+            lines.append(
+                f"  {group['group_id']}: "
+                f"候选={', '.join(group['candidate_variant_ids'])}; "
+                f"共享片段数={group['shared_fragment_count']} 状态={group['resolution']}"
+            )
+            for record in group["shared_fragments"]:
+                source = next(
+                    (s for s in payload.get("fragment_sources", [])
+                     if s["fragment_id"] == record["fragment_id"]),
+                    {},
+                )
+                lines.append(
+                    f"    {record['fragment_id']} "
+                    f"(来源={source.get('source_name', '-')}, qname={source.get('qname', '-')}) "
+                    f"-> {', '.join(record['supports'])}"
+                )
+    lines.append("")
     lines.append("覆盖不足区间 (单独说明)")
     lines.append("-" * 68)
     if not low:

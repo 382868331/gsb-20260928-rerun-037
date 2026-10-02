@@ -78,10 +78,17 @@ class CandidateEvidence:
     confidence: float = 0.0
     flags: list[str] = field(default_factory=list)
     status: str = "LOW_COVERAGE"  # PASS | SUSPECT | REJECTED | LOW_COVERAGE
+    alt_fragment_ids: list[str] = field(default_factory=list)
+    independent_alt_fragments: int = 0
+    shared_ambiguous_alt_fragments: int = 0
+    shared_with: dict[str, list[str]] = field(default_factory=dict)
 
     def supporting_summary(self) -> dict:
         return {
             "alt_fragments": self.alt_fragments,
+            "independent_alt_fragments": self.independent_alt_fragments,
+            "shared_ambiguous_alt_fragments": self.shared_ambiguous_alt_fragments,
+            "fragment_ids": self.alt_fragment_ids,
             "forward": self.alt_forward,
             "reverse": self.alt_reverse,
             "mean_base_quality": round(self.alt_mean_base_quality, 2),

@@ -77,7 +77,7 @@ def normalize(
         alt = alt[:-1]
 
     # 2. left-align pure indels across identical preceding bases (tandems).
-    if len(ref) == 1 or len(alt) == 1:
+    if len(ref) > 1 or len(alt) > 1:
         while True:
             moved = ref[-1] if len(ref) > 1 else alt[-1]
             preceding = base_at(pos - 1)

@@ -38,7 +38,7 @@
 ## 版本与历史批次
 
 分析规则版本记录在包常量 `variant_pipeline.ANALYSIS_VERSION`
-（当前 `orientation-forward-v2`，包版本 `0.3.0`）。
+（当前 `fragment-provenance-v3`，包版本 `0.4.0`）。
 
 `--outdir` 是**版本化结果库**的根目录：每次 `call` 都把结果发布为一个
 新的不可变版本目录 `outdir/runs/vNNNN/`（含 `manifest.json`），绝不覆盖
@@ -66,6 +66,31 @@
 都存在的候选，报告把各自版本的支持/反对证据（含共享片段与软截断
 留下的原始记录）并排列出，**绝不跨版本合并或拼接支持计数**。
 
+## 原始片段来源与共享歧义
+
+每个片段的证据身份为 `来源文件SHA-256前缀::QNAME`。因此两个批次即使使用相同
+QNAME，也不会被误认为同一份片段；同一批片段中途保存后重复导入，会按该身份去重，
+不增加任何独立支持，也不会覆盖此前保存在版本库外部的人工选择。
+
+候选输出同时给出：
+- `independent_alt_fragments`：只支持该候选的独立片段数；
+- `shared_ambiguous_alt_fragments`：同一原始片段同时支持互斥候选的共享歧义数；
+- `ambiguity_groups`：共享片段、候选集合及来源记录；
+- `fragment_sources`：QNAME、来源 ID/名称和批次 ID，供复核连接关系。
+
+`call --extra-reads 批次2.sam` 可在一次分析中加入新批次。比较版本时，
+`ambiguity_tracking` 将旧/新批次中的共享片段分成已解决、仍保留和新引入三类；
+比较结果还分别保留两个版本自己的临时采用决定，不把规则版本的决定相互覆盖。
+
+临时采用不修改不可变分析版本：
+- `variant-pipeline select --outdir OUT --version v0001 --variant ID` 保存选择；
+- `variant-pipeline selected-view --outdir OUT --version v0001` 查看该选择下的证据视图；
+- `variant-pipeline withdraw --outdir OUT --version v0001` 撤回选择。
+
+选择记录位于 `selections/`，原 `runs/vNNNN` 输出哈希保持不变。导出版本时，
+除原有输出和 manifest 外还包含 `shared_evidence_audit.json`，其中保留足以复核
+共享关系的输入哈希、片段来源和歧义分组记录。
+
 ## 输出
 
 每个候选包含支持证据（ALT 片段数、正/反向、ALT 比例、平均碱基质量、
@@ -88,6 +113,9 @@
   --config examples/config.example.json --outdir out
 .venv/bin/python -m variant_pipeline list --outdir out
 .venv/bin/python -m variant_pipeline compare --outdir out --from v0001 --to v0002
+.venv/bin/python -m variant_pipeline select --outdir out --version v0001 --variant synth-1:g.15G>A
+.venv/bin/python -m variant_pipeline selected-view --outdir out --version v0001
+.venv/bin/python -m variant_pipeline withdraw --outdir out --version v0001
 .venv/bin/python -m variant_pipeline verify --outdir out
 .venv/bin/python -m variant_pipeline export --outdir out --version v0001 --dest out-v1
 ```
