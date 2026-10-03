@@ -38,7 +38,7 @@
 ## 版本与历史批次
 
 分析规则版本记录在包常量 `variant_pipeline.ANALYSIS_VERSION`
-（当前 `fragment-provenance-v3`，包版本 `0.4.0`）。
+（当前 `molecule-linkage-v1`，包版本 `0.5.0`）。
 
 `--outdir` 是**版本化结果库**的根目录：每次 `call` 都把结果发布为一个
 新的不可变版本目录 `outdir/runs/vNNNN/`（含 `manifest.json`），绝不覆盖
@@ -91,6 +91,45 @@ QNAME，也不会被误认为同一份片段；同一批片段中途保存后重
 除原有输出和 manifest 外还包含 `shared_evidence_audit.json`，其中保留足以复核
 共享关系的输入哈希、片段来源和歧义分组记录。
 
+## 关联片段作为同一证据单元
+
+`call --links links.json`（可重复）接收关联声明：若干片段来自同一原始
+分子（见 `examples/links.example.json`）。关联片段组成**一个**分子证据
+单元，绝不按片段数抬升独立支持；报告同时给出单片段级候选
+（`alt_fragments` 等）与关联后的分子级候选（`molecule_evidence`：
+`alt_molecules` / `independent_alt_molecules` /
+`linkage_resolved_molecules` / `shared_ambiguous_molecules`）。
+
+- **组合排除解释**：同一分子的两个片段各自可匹配多个互斥候选时，组合
+  只保留所有成员共同支持的解释（`linkage_resolved_molecules`）；成员
+  支持互不相交的候选时记为分子级冲突（`molecule_conflicts`），该分子
+  弃权，不为任何一端投票。
+- **迟到与修订**：只到一端时单元保持 `pending`，已观察成员仍构成一个
+  可说明的证据单元；另一端在后续批次到达后重新核对（`compare` 的
+  `linkage_tracking` 记录状态变化）。同名但来源或分子身份不同的片段
+  **不会**自动配对（报 `ambiguous_identity`），需在关联声明中给出
+  `source` 显式指定。
+- **矛盾不静默丢弃**：声明的方向 / 距离 / 来源关系与比对事实矛盾时，
+  单元标记 `inconsistent`，原因区分 `fragment_matching_insufficient`
+  （片段匹配不足）与 `linkage_evidence_inconsistent`（关联依据不一致），
+  两端都保留为片段级证据。同一分子的重复声明合并为一个单元并记
+  `duplicate_import`。
+- **人工采用与规则比较**：
+  - `variant-pipeline link-view --outdir OUT --version vNNNN --link L1`
+    查看关联单元及其采用状态；
+  - `variant-pipeline link-select --outdir OUT --version vNNNN --link L1
+    --variant ID --rationale 理由` 临时采用一种解释，被排除的候选与
+    理由随记录保存（`selections/`，不修改不可变版本；新版本的片段不会
+    覆盖旧版本的选择）；
+  - `variant-pipeline link-withdraw ... --link L1` 撤回采用，恢复原有
+    歧义视图，不凭空新增独立证据；
+  - `variant-pipeline link-compare --outdir OUT --version vNNNN --links
+    另一规则.json` 在不重算、不修改基线版本的前提下，比较另一套关联
+    规则下各候选分子级支持的变化。
+- **导出可追溯**：`export` 额外写出 `linkage_audit.json`，从分子级
+  独立支持可追到原始分子、成员片段（`linkage_units` /
+  `fragment_linkage_detail`）与采用记录（含已撤回），并附输入哈希。
+
 ## 输出
 
 每个候选包含支持证据（ALT 片段数、正/反向、ALT 比例、平均碱基质量、
@@ -110,12 +149,19 @@ QNAME，也不会被误认为同一份片段；同一批片段中途保存后重
 ```bash
 .venv/bin/python examples/generate_example_reads.py
 .venv/bin/python -m variant_pipeline call \
-  --config examples/config.example.json --outdir out
+  --config examples/config.example.json --outdir out \
+  --links examples/links.example.json
 .venv/bin/python -m variant_pipeline list --outdir out
 .venv/bin/python -m variant_pipeline compare --outdir out --from v0001 --to v0002
 .venv/bin/python -m variant_pipeline select --outdir out --version v0001 --variant synth-1:g.15G>A
 .venv/bin/python -m variant_pipeline selected-view --outdir out --version v0001
 .venv/bin/python -m variant_pipeline withdraw --outdir out --version v0001
+.venv/bin/python -m variant_pipeline link-view --outdir out --version v0001 --link L1
+.venv/bin/python -m variant_pipeline link-select --outdir out --version v0001 \
+  --link L1 --variant synth-1:g.15G>A --rationale "组合后仅共同支持该候选"
+.venv/bin/python -m variant_pipeline link-compare --outdir out --version v0001 \
+  --links examples/links.example.json
+.venv/bin/python -m variant_pipeline link-withdraw --outdir out --version v0001 --link L1
 .venv/bin/python -m variant_pipeline verify --outdir out
 .venv/bin/python -m variant_pipeline export --outdir out --version v0001 --dest out-v1
 ```

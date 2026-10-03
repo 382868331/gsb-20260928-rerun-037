@@ -9,6 +9,7 @@ from .store import sha256_file
 from .caller import CallResult, call_variants
 from .config import RunConfig
 from .fasta import read_fasta
+from .linkage import LinkSpec
 from .samio import build_fragments, read_sam
 
 
@@ -35,12 +36,14 @@ def load_fragments(config: RunConfig, reads_path: str | None = None):
     return fragments, references
 
 
-def run(config: RunConfig, reads_path: str | None = None) -> CallResult:
+def run(config: RunConfig, reads_path: str | None = None,
+        links: list[LinkSpec] | None = None) -> CallResult:
     fragments, references = load_fragments(config, reads_path)
-    return call_variants(fragments, references, config.parameters)
+    return call_variants(fragments, references, config.parameters, links=links)
 
 
-def run_many(config: RunConfig, read_paths: list[str]) -> CallResult:
+def run_many(config: RunConfig, read_paths: list[str],
+             links: list[LinkSpec] | None = None) -> CallResult:
     references = read_fasta(config.reference.fasta_path)
     all_fragments = []
     seen_fragment_ids: set[str] = set()
@@ -60,4 +63,5 @@ def run_many(config: RunConfig, read_paths: list[str]) -> CallResult:
             if fragment.evidence_id not in seen_fragment_ids:
                 seen_fragment_ids.add(fragment.evidence_id)
                 all_fragments.append(fragment)
-    return call_variants(all_fragments, references, config.parameters)
+    return call_variants(all_fragments, references, config.parameters,
+                         links=links)

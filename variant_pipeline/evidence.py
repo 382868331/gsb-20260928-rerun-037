@@ -82,6 +82,12 @@ class CandidateEvidence:
     independent_alt_fragments: int = 0
     shared_ambiguous_alt_fragments: int = 0
     shared_with: dict[str, list[str]] = field(default_factory=dict)
+    # molecule-level evidence (linked fragments count once per molecule)
+    alt_molecules: int = 0
+    independent_alt_molecules: int = 0
+    shared_ambiguous_molecules: int = 0
+    linkage_resolved_molecules: int = 0
+    molecule_ids: list[str] = field(default_factory=list)
 
     def supporting_summary(self) -> dict:
         return {
@@ -94,6 +100,15 @@ class CandidateEvidence:
             "mean_base_quality": round(self.alt_mean_base_quality, 2),
             "low_quality_alt_fragments": self.low_quality_alt_fragments,
             "alt_fraction_of_informative": round(self.alt_fraction, 4),
+        }
+
+    def molecule_summary(self) -> dict:
+        return {
+            "alt_molecules": self.alt_molecules,
+            "independent_alt_molecules": self.independent_alt_molecules,
+            "shared_ambiguous_molecules": self.shared_ambiguous_molecules,
+            "linkage_resolved_molecules": self.linkage_resolved_molecules,
+            "molecule_ids": self.molecule_ids,
         }
 
     def opposing_summary(self) -> dict:

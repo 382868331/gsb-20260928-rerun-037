@@ -1,0 +1,20 @@
+{
+  "links": [
+    {
+      "link_id": "L1",
+      "molecule_id": "mol-1",
+      "members": ["read-a", "read-b"],
+      "source": "reads.sam",
+      "expected": {
+        "orientation": "FR",
+        "max_distance": 500,
+        "same_chrom": true
+      }
+    },
+    {
+      "link_id": "L2",
+      "molecule_id": "mol-2",
+      "members": ["read-c", "read-d-later"]
+    }
+  ]
+}

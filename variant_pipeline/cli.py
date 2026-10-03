@@ -12,11 +12,17 @@ from . import __version__
 from .config import RunConfig
 from .diff import compare_versions, render_diff_text
 from .interpretation import (
+    link_view,
+    list_link_selections,
+    load_link_selection,
     load_selection,
+    save_link_selection,
     save_selection,
     selected_view,
+    withdraw_link_selection,
     withdraw_selection,
 )
+from .linkage import load_links, recount_payload
 from .pipeline import run
 from .report import (
     build_payload,
@@ -43,6 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
     call.add_argument("--reads", help="SAM path (overrides config reads_path)")
     call.add_argument("--extra-reads", action="append", default=[],
                       help="additional SAM batch; repeatable")
+    call.add_argument("--links", action="append", default=[],
+                      help="linkage JSON declaring fragments from the same "
+                      "original molecule; repeatable")
     call.add_argument("--outdir", required=True,
                       help="versioned run store root directory")
     call.add_argument("--force", action="store_true",
@@ -89,6 +98,38 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--outdir", required=True)
     verify.add_argument("--version",
                         help="verify a single version (default: all)")
+
+    link_view_cmd = sub.add_parser(
+        "link-view", help="show one linkage unit and its adoption state")
+    link_view_cmd.add_argument("--outdir", required=True)
+    link_view_cmd.add_argument("--version", required=True)
+    link_view_cmd.add_argument("--link", required=True)
+    link_view_cmd.add_argument("--json-out")
+
+    link_select = sub.add_parser(
+        "link-select",
+        help="provisionally adopt one interpretation for a linkage unit")
+    link_select.add_argument("--outdir", required=True)
+    link_select.add_argument("--version", required=True)
+    link_select.add_argument("--link", required=True)
+    link_select.add_argument("--variant", required=True)
+    link_select.add_argument("--rationale", required=True)
+
+    link_withdraw = sub.add_parser(
+        "link-withdraw", help="withdraw a linkage-unit adoption")
+    link_withdraw.add_argument("--outdir", required=True)
+    link_withdraw.add_argument("--version", required=True)
+    link_withdraw.add_argument("--link", required=True)
+
+    link_compare = sub.add_parser(
+        "link-compare",
+        help="compare molecule-level support under an alternative "
+        "linkage rule without modifying the base version")
+    link_compare.add_argument("--outdir", required=True)
+    link_compare.add_argument("--version", required=True)
+    link_compare.add_argument("--links", required=True,
+                              help="alternative linkage JSON file")
+    link_compare.add_argument("--json-out")
     return parser
 
 
@@ -102,11 +143,15 @@ def _cmd_call(args) -> int:
     config_dict = cfg.to_dict()
     if args.reads:
         config_dict["reads_path"] = args.reads
+    link_specs = []
+    for link_path in args.links:
+        link_specs.extend(load_links(link_path))
     fingerprint = store.fingerprint(
         config_dict=config_dict,
         reads_path=reads,
         fasta_path=cfg.reference.fasta_path,
         extra_read_paths=args.extra_reads,
+        link_paths=args.links,
     )
     if not args.force:
         duplicate = store.find_duplicate(fingerprint)
@@ -119,10 +164,10 @@ def _cmd_call(args) -> int:
 
     read_paths = [reads] + args.extra_reads
     if len(read_paths) == 1:
-        result = run(cfg, reads)
+        result = run(cfg, reads, links=link_specs)
     else:
         from .pipeline import run_many
-        result = run_many(cfg, read_paths)
+        result = run_many(cfg, read_paths, links=link_specs)
     payload = build_payload(cfg, result)
     text = render_text_report(payload)
     with tempfile.TemporaryDirectory(
@@ -140,6 +185,7 @@ def _cmd_call(args) -> int:
             reads_path=reads,
             fasta_path=cfg.reference.fasta_path,
             extra_read_paths=args.extra_reads,
+            link_paths=args.links,
             fingerprint=fingerprint,
         )
     print(text)
@@ -228,6 +274,81 @@ def _cmd_verify(args) -> int:
     return 0
 
 
+def _cmd_link_view(args) -> int:
+    store = RunStore(args.outdir)
+    info = store.verify(args.version)
+    adoption = load_link_selection(store, args.version, args.link)
+    payload = link_view(info, args.link, adoption=adoption)
+    text = json.dumps(payload, indent=2, ensure_ascii=False)
+    print(text)
+    if args.json_out:
+        Path(args.json_out).write_text(text + "\n", encoding="utf-8")
+    return 0
+
+
+def _cmd_link_select(args) -> int:
+    store = RunStore(args.outdir)
+    record = save_link_selection(
+        store, args.version, args.link, args.variant, args.rationale)
+    print(f"[link-select] 已临时采用 {record['selected_variant_id']} "
+          f"解释关联单元 {record['link_id']}; "
+          f"排除候选={record['excluded_variant_ids']}; "
+          f"原分析版本 {record['base_version']} 未修改")
+    return 0
+
+
+def _cmd_link_withdraw(args) -> int:
+    store = RunStore(args.outdir)
+    record = withdraw_link_selection(store, args.version, args.link)
+    print(f"[link-withdraw] 已撤回 {record['base_version']} 关联单元 "
+          f"{record['link_id']} 的临时采用，恢复原有歧义视图")
+    return 0
+
+
+def _cmd_link_compare(args) -> int:
+    store = RunStore(args.outdir)
+    info = store.verify(args.version)
+    payload = json.loads(
+        (info.path / "candidates.json").read_text(encoding="utf-8"))
+    alt_specs = load_links(args.links)
+    recount = recount_payload(payload, alt_specs)
+    current = {
+        cand["variant_id"]: cand.get("molecule_evidence", {})
+        for cand in payload.get("candidates", [])
+    }
+    alternative = recount["molecule_counts"]
+    variant_ids = sorted(set(current) | set(alternative))
+    changes = []
+    for vid in variant_ids:
+        before = current.get(vid, {})
+        after = alternative.get(vid, {})
+        row = {"variant_id": vid}
+        changed = False
+        for key in ("alt_molecules", "independent_alt_molecules",
+                    "shared_ambiguous_molecules",
+                    "linkage_resolved_molecules"):
+            old_val = before.get(key, 0)
+            new_val = after.get(key, 0)
+            if old_val != new_val:
+                changed = True
+            row[key] = {"current": old_val, "alternative": new_val}
+        if changed:
+            changes.append(row)
+    result = {
+        "base_version": args.version,
+        "alternative_links": args.links,
+        "does_not_modify_base_version": True,
+        "support_changes": changes,
+        "alternative_units": recount["units"],
+        "alternative_molecule_conflicts": recount["molecule_conflicts"],
+    }
+    text = json.dumps(result, indent=2, ensure_ascii=False)
+    print(text)
+    if args.json_out:
+        Path(args.json_out).write_text(text + "\n", encoding="utf-8")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {
@@ -239,6 +360,10 @@ def main(argv: list[str] | None = None) -> int:
         "selected-view": _cmd_selected_view,
         "export": _cmd_export,
         "verify": _cmd_verify,
+        "link-view": _cmd_link_view,
+        "link-select": _cmd_link_select,
+        "link-withdraw": _cmd_link_withdraw,
+        "link-compare": _cmd_link_compare,
     }
     try:
         return handlers[args.command](args)

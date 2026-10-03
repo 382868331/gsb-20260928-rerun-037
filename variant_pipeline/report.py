@@ -21,6 +21,8 @@ TSV_COLUMNS = [
     "alt_forward", "alt_reverse", "strand_bias_p",
     "low_quality_alt_fragments", "conflicting_overlap_fragments",
     "independent_alt_fragments", "shared_ambiguous_alt_fragments",
+    "alt_molecules", "independent_alt_molecules",
+    "linkage_resolved_molecules", "shared_ambiguous_molecules",
     "depth", "passing_depth", "informative_depth", "alt_fraction",
     "alt_mean_base_quality", "flags",
 ]
@@ -47,6 +49,7 @@ def candidate_dict(ev) -> dict:
                 for fid, vids in sorted(ev.shared_with.items())
             ],
         },
+        "molecule_evidence": ev.molecule_summary(),
         "opposing_evidence": ev.opposing_summary(),
         "coverage": {
             "fragment_depth": ev.depth,
@@ -81,6 +84,9 @@ def build_payload(cfg: RunConfig, result: CallResult) -> dict:
         ],
         "ambiguity_groups": result.ambiguity_groups,
         "fragment_sources": result.fragment_sources,
+        "linkage_units": result.linkage_units,
+        "molecule_conflicts": result.molecule_conflicts,
+        "fragment_linkage_detail": result.fragment_linkage_detail,
     }
 
 
@@ -131,6 +137,14 @@ def render_text_report(payload: dict) -> str:
             f"共享歧义={amb.get('shared_ambiguous_alt_fragments', 0)}; "
             "共享片段不得重复计为新增独立证据"
         )
+        mol = cand.get("molecule_evidence", {})
+        lines.append(
+            f"  分子单元: 支持分子={mol.get('alt_molecules', 0)} "
+            f"独立={mol.get('independent_alt_molecules', 0)} "
+            f"关联解决={mol.get('linkage_resolved_molecules', 0)} "
+            f"仍歧义={mol.get('shared_ambiguous_molecules', 0)}; "
+            "同一原始分子的多个片段只算一个证据单元"
+        )
         lines.append(
             f"  支持: ALT片段={s['alt_fragments']} "
             f"(正向={s['forward']}, 反向={s['reverse']}) "
@@ -176,6 +190,40 @@ def render_text_report(payload: dict) -> str:
                     f"(来源={source.get('source_name', '-')}, qname={source.get('qname', '-')}) "
                     f"-> {', '.join(record['supports'])}"
                 )
+    lines.append("")
+    lines.append("关联片段证据单元 (同一原始分子只计一次)")
+    lines.append("-" * 68)
+    units = payload.get("linkage_units", [])
+    declared = [u for u in units if u.get("link_id")]
+    if not declared:
+        lines.append("无关联声明；每个片段各自为一个证据单元")
+    else:
+        for unit in declared:
+            members = ", ".join(m["fragment_id"] for m in unit["members"])
+            lines.append(
+                f"  {unit['unit_id']} (link={unit['link_id']}, "
+                f"分子={unit['molecule_id']}) 状态={unit['state']}"
+            )
+            if members:
+                lines.append(f"    成员: {members}")
+            if unit["missing_members"]:
+                lines.append(
+                    f"    缺失成员: {', '.join(unit['missing_members'])}"
+                    " (保留待配对，不静默丢弃)"
+                )
+            for reason in unit["reasons"]:
+                lines.append(
+                    f"    原因[{reason['kind']}]: {reason['detail']}"
+                )
+    conflicts = payload.get("molecule_conflicts", [])
+    if conflicts:
+        lines.append("  分子级冲突 (组合关系排除的解释):")
+        for conflict in conflicts:
+            lines.append(
+                f"    {conflict['unit_id']}: "
+                f"候选={', '.join(conflict['candidate_variant_ids'])} "
+                f"原因={conflict['reason']}"
+            )
     lines.append("")
     lines.append("覆盖不足区间 (单独说明)")
     lines.append("-" * 68)

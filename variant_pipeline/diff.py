@@ -47,7 +47,7 @@ def attribute_cause(from_info: VersionInfo, to_info: VersionInfo) -> dict:
     to_inputs = to_info.manifest.get("inputs", {})
     input_changed = any(
         from_inputs.get(key) != to_inputs.get(key)
-        for key in ("reads_sha256", "fasta_sha256")
+        for key in ("reads_sha256", "fasta_sha256", "extra_reads", "links")
     )
     from_params = from_inputs.get("config", {}).get("parameters", {})
     to_params = to_inputs.get("config", {}).get("parameters", {})
@@ -142,6 +142,7 @@ def compare_versions(store: RunStore, from_version: str,
                 "to": _evidence_snapshot(to_cands[variant_id]),
             })
     ambiguity_tracking = _ambiguity_tracking(from_payload, to_payload)
+    linkage_tracking = _linkage_tracking(from_payload, to_payload)
     return {
         "from_version": from_version,
         "to_version": to_version,
@@ -150,6 +151,7 @@ def compare_versions(store: RunStore, from_version: str,
         "removed": removed,
         "changed": changed,
         "ambiguity_tracking": ambiguity_tracking,
+        "linkage_tracking": linkage_tracking,
         "adoption_decisions": {
             "from": load_selection(store, from_version),
             "to": load_selection(store, to_version),
@@ -222,6 +224,58 @@ def _ambiguity_tracking(from_payload: dict, to_payload: dict) -> dict:
     }
 
 
+def _linkage_state_map(payload: dict) -> dict[str, dict]:
+    states: dict[str, dict] = {}
+    for unit in payload.get("linkage_units", []):
+        if unit.get("link_id") is None:
+            continue
+        states[unit["link_id"]] = {
+            "state": unit.get("state"),
+            "molecule_id": unit.get("molecule_id"),
+            "members": [m["fragment_id"] for m in unit.get("members", [])],
+            "missing_members": unit.get("missing_members", []),
+        }
+    return states
+
+
+def _linkage_tracking(from_payload: dict, to_payload: dict) -> dict:
+    """Track linkage-unit state changes across versions.
+
+    A link whose second end arrives in a later batch moves pending ->
+    complete and the affected ambiguity is re-checked; revised or
+    contradictory linkage evidence shows up as a state transition, never
+    as silently dropped fragments.
+    """
+    old = _linkage_state_map(from_payload)
+    new = _linkage_state_map(to_payload)
+    transitions = []
+    for link_id in sorted(old.keys() & new.keys()):
+        if old[link_id]["state"] != new[link_id]["state"]:
+            transitions.append({
+                "link_id": link_id,
+                "molecule_id": new[link_id]["molecule_id"],
+                "from_state": old[link_id]["state"],
+                "to_state": new[link_id]["state"],
+            })
+    return {
+        "transitions": transitions,
+        "introduced_links": [
+            {"link_id": link_id, **new[link_id]}
+            for link_id in sorted(new.keys() - old.keys())
+        ],
+        "removed_links": [
+            {"link_id": link_id, **old[link_id]}
+            for link_id in sorted(old.keys() - new.keys())
+        ],
+        "summary": {
+            "transitions": len(transitions),
+            "introduced": len(new.keys() - old.keys()),
+            "removed": len(old.keys() - new.keys()),
+            "unchanged": len(old.keys() & new.keys()) - len(transitions),
+        },
+    }
+
+
 def render_diff_text(diff: dict) -> str:
     attr = diff["attribution"]
     cause_labels = {
@@ -259,6 +313,20 @@ def render_diff_text(diff: dict) -> str:
             lines.append(f"  [已解决] {item['fragment_id']} 原支持={','.join(item['supports'])}")
         for item in tracking.get("retained_ambiguities", []):
             lines.append(f"  [仍保留] {item['fragment_id']} 支持={','.join(item['supports'])}")
+        lines.append("")
+    linkage = diff.get("linkage_tracking", {})
+    if linkage:
+        ls = linkage["summary"]
+        lines.append(
+            f"关联单元追踪: 状态变化={ls['transitions']} "
+            f"新引入={ls['introduced']} 移除={ls.get('removed', 0)} "
+            f"不变={ls['unchanged']}"
+        )
+        for item in linkage.get("transitions", []):
+            lines.append(
+                f"  [关联变化] {item['link_id']} "
+                f"{item['from_state']} -> {item['to_state']}"
+            )
         lines.append("")
     decisions = diff.get("adoption_decisions", {})
     lines.append(

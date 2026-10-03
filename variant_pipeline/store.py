@@ -79,7 +79,8 @@ class RunStore:
 
     def fingerprint(self, *, config_dict: dict, reads_path: str,
                     fasta_path: str,
-                    extra_read_paths: list[str] | tuple[str, ...] = ()) -> str:
+                    extra_read_paths: list[str] | tuple[str, ...] = (),
+                    link_paths: list[str] | tuple[str, ...] = ()) -> str:
         """Stable identity of one analysis request.
 
         Binds the exact inputs (reads + reference bytes), the full run
@@ -97,6 +98,10 @@ class RunStore:
                     {"sha256": sha256_file(path)}
                     for path in extra_read_paths
                 ],
+                "links": [
+                    {"sha256": sha256_file(path)}
+                    for path in link_paths
+                ],
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -112,7 +117,8 @@ class RunStore:
     def publish(self, outputs: dict[str, str | Path], *,
                 config_dict: dict, reads_path: str, fasta_path: str,
                 fingerprint: str,
-                extra_read_paths: list[str] | tuple[str, ...] = ()) -> VersionInfo:
+                extra_read_paths: list[str] | tuple[str, ...] = (),
+                link_paths: list[str] | tuple[str, ...] = ()) -> VersionInfo:
         """Publish a new version atomically; never touches old versions.
 
         ``outputs`` maps output filenames to the staged file paths to
@@ -152,6 +158,13 @@ class RunStore:
                             "sha256": sha256_file(path),
                         }
                         for path in extra_read_paths
+                    ],
+                    "links": [
+                        {
+                            "path": str(path),
+                            "sha256": sha256_file(path),
+                        }
+                        for path in link_paths
                     ],
                 },
                 "outputs": output_hashes,
@@ -228,7 +241,41 @@ class RunStore:
             json.dumps(audit, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
+        linkage_audit = self.linkage_audit(version)
+        (dest / "linkage_audit.json").write_text(
+            json.dumps(linkage_audit, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
         return dest
+
+    def linkage_audit(self, version: str) -> dict:
+        """Trace molecule-level support back to molecules and adoptions.
+
+        Independent support counts in the exported payload can be traced
+        through linkage_units (molecule -> member fragments) and the
+        adoption records kept under selections/ (including withdrawn
+        ones), so a withdrawn linkage restores the original ambiguity
+        instead of fabricating independent evidence.
+        """
+        from .interpretation import list_link_selections
+
+        info = self.verify(version)
+        payload = json.loads(
+            (info.path / "candidates.json").read_text(encoding="utf-8"))
+        return {
+            "version": version,
+            "analysis_version": info.manifest.get("analysis_version"),
+            "inputs": info.manifest.get("inputs", {}),
+            "linkage_units": payload.get("linkage_units", []),
+            "molecule_conflicts": payload.get("molecule_conflicts", []),
+            "fragment_linkage_detail": payload.get(
+                "fragment_linkage_detail", []),
+            "link_adoptions": list_link_selections(self, version),
+            "candidate_molecule_evidence": {
+                cand["variant_id"]: cand.get("molecule_evidence", {})
+                for cand in payload.get("candidates", [])
+            },
+        }
 
     def audit_sources(self, version: str) -> dict:
         info = self.verify(version)

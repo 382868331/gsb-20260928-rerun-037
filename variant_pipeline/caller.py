@@ -14,6 +14,13 @@ from .evidence import CandidateEvidence, fisher_two_sided, score_candidate
 from .fasta import Reference
 from .normalize import Variant
 from .samio import Fragment
+from .linkage import (
+    FragmentView,
+    LinkSpec,
+    combination_resolution,
+    molecule_support_counts,
+    resolve_links,
+)
 
 
 @dataclass
@@ -31,6 +38,9 @@ class CallResult:
     low_coverage: list[tuple[str, int, int, int]]  # chrom,start,end,min_depth
     ambiguity_groups: list[dict] = field(default_factory=list)
     fragment_sources: list[dict] = field(default_factory=list)
+    linkage_units: list[dict] = field(default_factory=list)
+    molecule_conflicts: list[dict] = field(default_factory=list)
+    fragment_linkage_detail: list[dict] = field(default_factory=list)
 
 
 def _overlaps(a: Variant, b: Variant) -> bool:
@@ -86,10 +96,25 @@ def _depth_arrays(
     return out
 
 
+def _fragment_view(frag: Fragment) -> FragmentView:
+    chrom = next(iter(frag.chroms)) if len(frag.chroms) == 1 else None
+    return FragmentView(
+        fragment_id=frag.evidence_id,
+        qname=frag.qname,
+        source_id=frag.source_id,
+        source_name=frag.source_name or frag.source_id,
+        strand=frag.strand,
+        chrom=chrom,
+        spans=tuple(sorted(frag.covered)),
+        alt_variant_ids=tuple(obs.variant.vid for obs in frag.alt.values()),
+    )
+
+
 def call_variants(
     fragments: list[Fragment],
     references: dict[str, Reference],
     params: Parameters,
+    links: list[LinkSpec] | None = None,
 ) -> CallResult:
     fragment_sources = [
         {
@@ -216,13 +241,111 @@ def call_variants(
     depth_maps = _depth_arrays(fragments, references)
     coverage, low = _coverage_report(depth_maps, params.low_coverage_depth)
     ambiguity_groups = _ambiguity_groups(candidates)
+
+    views = [_fragment_view(frag) for frag in fragments]
+    units, counting_units = resolve_links(links or [], views)
+    counting_unit_ids: list[str] = []
+    for members in counting_units:
+        owner = next(
+            (
+                unit
+                for unit in units
+                if unit.state != "singleton"
+                and any(m.fragment_id == members[0].fragment_id
+                        for m in unit.members)
+            ),
+            None,
+        )
+        counting_unit_ids.append(
+            owner.unit_id if owner is not None
+            else f"unit-{members[0].fragment_id}"
+        )
+    groups = _resolution_groups(candidates, ambiguity_groups)
+    resolved, conflicts = combination_resolution(counting_units, groups)
+    group_of = {
+        vid: frozenset(group)
+        for group in groups
+        for vid in group
+    }
+    mol_counts = molecule_support_counts(
+        counting_units, counting_unit_ids, resolved, group_of,
+        conflicts=conflicts)
+    for ev in candidates:
+        rec = mol_counts.get(ev.variant_id)
+        if rec is None:
+            continue
+        ev.alt_molecules = rec["alt_molecules"]
+        ev.independent_alt_molecules = rec["independent_alt_molecules"]
+        ev.shared_ambiguous_molecules = rec["shared_ambiguous_molecules"]
+        ev.linkage_resolved_molecules = rec["linkage_resolved_molecules"]
+        ev.molecule_ids = rec["molecule_ids"]
+    molecule_conflicts = []
+    for conflict in conflicts:
+        conflict = dict(conflict)
+        conflict["unit_id"] = counting_unit_ids[conflict.pop("unit_index")]
+        molecule_conflicts.append(conflict)
+    fragment_linkage_detail = [
+        {
+            "fragment_id": view.fragment_id,
+            "qname": view.qname,
+            "source_id": view.source_id,
+            "source_name": view.source_name,
+            "strand": view.strand,
+            "chrom": view.chrom,
+            "spans": [list(span) for span in view.spans],
+            "alt_variant_ids": list(view.alt_variant_ids),
+        }
+        for view in views
+    ]
     return CallResult(
         candidates=candidates,
         coverage=coverage,
         low_coverage=low,
         ambiguity_groups=ambiguity_groups,
         fragment_sources=fragment_sources,
+        linkage_units=[unit.to_dict() for unit in units],
+        molecule_conflicts=molecule_conflicts,
+        fragment_linkage_detail=fragment_linkage_detail,
     )
+
+
+def _resolution_groups(candidates, ambiguity_groups):
+    """Components of mutually exclusive candidate interpretations.
+
+    Candidates connect when a fragment is shared between them or when
+    their alleles overlap the same reference anchor, so the combination
+    of a molecule's member matches is checked against every
+    interpretation it could exclude.
+    """
+    parent = {ev.variant_id: ev.variant_id for ev in candidates}
+
+    def find(vid):
+        while parent[vid] != vid:
+            parent[vid] = parent[parent[vid]]
+            vid = parent[vid]
+        return vid
+
+    def union(a, b):
+        parent[find(a)] = find(b)
+
+    for group in ambiguity_groups:
+        members = group["candidate_variant_ids"]
+        for vid in members[1:]:
+            union(members[0], vid)
+    by_id = {ev.variant_id: ev for ev in candidates}
+    ids = sorted(by_id)
+    for i, first in enumerate(ids):
+        a = by_id[first]
+        for second in ids[i + 1:]:
+            b = by_id[second]
+            if (a.chrom == b.chrom
+                    and a.pos < b.pos + len(b.ref)
+                    and b.pos < a.pos + len(a.ref)):
+                union(first, second)
+    components = {}
+    for vid in parent:
+        components.setdefault(find(vid), set()).add(vid)
+    return [comp for comp in components.values() if len(comp) > 1]
 
 
 def _ambiguity_groups(candidates: list[CandidateEvidence]) -> list[dict]:

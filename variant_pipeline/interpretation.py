@@ -146,6 +146,160 @@ def selected_view(info: VersionInfo, selected_variant_id: str) -> dict:
     return payload
 
 
+def link_selection_path(store: RunStore, version: str, link_id: str) -> Path:
+    safe = version.replace("/", "_")
+    safe_link = link_id.replace("/", "_")
+    return store.root / SELECTIONS_DIRNAME / f"{safe}.link-{safe_link}.json"
+
+
+def _link_unit(info: VersionInfo, link_id: str) -> dict | None:
+    payload = json.loads(
+        (info.path / "candidates.json").read_text(encoding="utf-8"))
+    for unit in payload.get("linkage_units", []):
+        if unit.get("link_id") == link_id:
+            return unit
+    return None
+
+
+def _unit_candidate_ids(unit: dict) -> list[str]:
+    supported: set[str] = set()
+    for member in unit.get("members", []):
+        supported.update(member.get("alt_variant_ids", []))
+    return sorted(supported)
+
+
+def save_link_selection(
+    store: RunStore,
+    version: str,
+    link_id: str,
+    selected_variant_id: str,
+    rationale: str,
+) -> dict:
+    """Provisionally adopt one interpretation for a linkage unit.
+
+    The excluded candidates and the rationale are kept with the record so
+    later reviewers can see exactly which interpretations the choice set
+    aside. An existing provisional record is never overwritten; withdraw
+    it first. Records live outside the immutable run versions, so new
+    fragments published as new versions never touch older choices.
+    """
+    info = store.verify(version)
+    unit = _link_unit(info, link_id)
+    if unit is None:
+        raise ValueError(f"unknown linkage unit in {version}: {link_id}")
+    candidates = _unit_candidate_ids(unit)
+    if selected_variant_id not in candidates:
+        raise ValueError(
+            f"{selected_variant_id} is not supported by any member of "
+            f"link {link_id} (supported: {candidates})")
+    target = link_selection_path(store, version, link_id)
+    existing = None
+    if target.is_file():
+        existing = json.loads(target.read_text(encoding="utf-8"))
+        if existing.get("status") == "provisional":
+            raise ValueError(
+                f"{version} link {link_id} already has provisional selection "
+                f"{existing.get('selected_variant_id')}; withdraw it first"
+            )
+    record = {
+        "selection_id": existing.get("selection_id") if existing else sha256_text(
+            f"{version}:{link_id}:{selected_variant_id}")[:16],
+        "base_version": version,
+        "link_id": link_id,
+        "molecule_id": unit.get("molecule_id"),
+        "selected_variant_id": selected_variant_id,
+        "excluded_variant_ids": [
+            vid for vid in candidates if vid != selected_variant_id
+        ],
+        "rationale": rationale,
+        "status": "provisional",
+        "supersedes": existing.get("selection_id") if existing else None,
+    }
+    _write_json(target, record)
+    return record
+
+
+def withdraw_link_selection(store: RunStore, version: str,
+                            link_id: str) -> dict:
+    target = link_selection_path(store, version, link_id)
+    if not target.is_file():
+        raise ValueError(f"no provisional selection for {version} link {link_id}")
+    record = json.loads(target.read_text(encoding="utf-8"))
+    if record.get("status") == "withdrawn":
+        raise ValueError(
+            f"selection for {version} link {link_id} is already withdrawn")
+    record["status"] = "withdrawn"
+    _write_json(target, record)
+    return record
+
+
+def load_link_selection(store: RunStore, version: str,
+                        link_id: str) -> dict | None:
+    path = link_selection_path(store, version, link_id)
+    if not path.is_file():
+        return None
+    record = json.loads(path.read_text(encoding="utf-8"))
+    return record if record.get("status") == "provisional" else None
+
+
+def list_link_selections(store: RunStore, version: str) -> list[dict]:
+    """All linkage adoption records for a version, including withdrawn."""
+    safe = version.replace("/", "_")
+    directory = store.root / SELECTIONS_DIRNAME
+    if not directory.is_dir():
+        return []
+    records = []
+    for path in sorted(directory.glob(f"{safe}.link-*.json")):
+        records.append(json.loads(path.read_text(encoding="utf-8")))
+    return records
+
+
+def link_view(info: VersionInfo, link_id: str,
+              adoption: dict | None = None) -> dict:
+    """Evidence view of one linkage unit, optionally under an adoption.
+
+    Withdrawing an adoption restores the original ambiguity view: the
+    base version payload is never modified and no independent evidence is
+    fabricated in either direction.
+    """
+    payload = json.loads(
+        (info.path / "candidates.json").read_text(encoding="utf-8"))
+    unit = next(
+        (u for u in payload.get("linkage_units", [])
+         if u.get("link_id") == link_id),
+        None,
+    )
+    if unit is None:
+        raise ValueError(f"unknown linkage unit in {info.version}: {link_id}")
+    candidates = _unit_candidate_ids(unit)
+    by_id = {c["variant_id"]: c for c in payload.get("candidates", [])}
+    view_candidates = []
+    for vid in candidates:
+        candidate = by_id.get(vid)
+        if candidate is None:
+            continue
+        entry = {
+            "variant_id": vid,
+            "status": candidate.get("status"),
+            "molecule_evidence": candidate.get("molecule_evidence", {}),
+            "supporting_evidence": candidate.get("supporting_evidence", {}),
+        }
+        if adoption is not None:
+            if vid == adoption["selected_variant_id"]:
+                entry["selection_state"] = "provisionally_selected"
+            elif vid in adoption.get("excluded_variant_ids", []):
+                entry["selection_state"] = "excluded_by_provisional_choice"
+        view_candidates.append(entry)
+    return {
+        "base_version": info.version,
+        "link_id": link_id,
+        "unit": unit,
+        "candidates": view_candidates,
+        "adoption": adoption,
+        "does_not_modify_base_version": True,
+    }
+
+
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".selection-", dir=str(path.parent))

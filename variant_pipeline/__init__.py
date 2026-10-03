@@ -6,12 +6,12 @@ candidate. It is intended for research workflow use only and does not emit
 clinical or medical conclusions.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 # Analysis rule version. Bumped when evidence semantics change; outputs
 # produced under previous rule versions remain valid historical batches and
 # are never rewritten in place.
-ANALYSIS_VERSION = "fragment-provenance-v3"
+ANALYSIS_VERSION = "molecule-linkage-v1"
 
 RESEARCH_DISCLAIMER = (
     "Research use only. Output is an unvalidated candidate summary for "
