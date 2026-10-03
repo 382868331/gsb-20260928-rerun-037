@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .association import load_association_relations
 from .store import sha256_file
 
 from .caller import CallResult, call_variants
@@ -35,12 +36,16 @@ def load_fragments(config: RunConfig, reads_path: str | None = None):
     return fragments, references
 
 
-def run(config: RunConfig, reads_path: str | None = None) -> CallResult:
+def run(config: RunConfig, reads_path: str | None = None,
+        associations_path: str | None = None) -> CallResult:
     fragments, references = load_fragments(config, reads_path)
-    return call_variants(fragments, references, config.parameters)
+    relations = load_association_relations(
+        associations_path or config.associations_path)
+    return call_variants(fragments, references, config.parameters, relations)
 
 
-def run_many(config: RunConfig, read_paths: list[str]) -> CallResult:
+def run_many(config: RunConfig, read_paths: list[str],
+             associations_path: str | None = None) -> CallResult:
     references = read_fasta(config.reference.fasta_path)
     all_fragments = []
     seen_fragment_ids: set[str] = set()
@@ -60,4 +65,6 @@ def run_many(config: RunConfig, read_paths: list[str]) -> CallResult:
             if fragment.evidence_id not in seen_fragment_ids:
                 seen_fragment_ids.add(fragment.evidence_id)
                 all_fragments.append(fragment)
-    return call_variants(all_fragments, references, config.parameters)
+    relations = load_association_relations(
+        associations_path or config.associations_path)
+    return call_variants(all_fragments, references, config.parameters, relations)

@@ -45,6 +45,7 @@ class RunConfig:
     reference: ReferenceConfig
     parameters: Parameters = field(default_factory=Parameters)
     reads_path: str | None = None
+    associations_path: str | None = None
 
     @staticmethod
     def from_dict(data: dict) -> "RunConfig":
@@ -62,6 +63,7 @@ class RunConfig:
             reference=reference,
             parameters=params,
             reads_path=data.get("reads_path"),
+            associations_path=data.get("associations_path"),
         )
 
     @staticmethod
@@ -93,6 +95,11 @@ def _resolve_paths(cfg: RunConfig, base_dir: Path) -> RunConfig:
         rp = Path(reads_path)
         if not rp.is_absolute():
             reads_path = str((base_dir / rp).resolve())
+    associations_path = cfg.associations_path
+    if associations_path is not None:
+        ap = Path(associations_path)
+        if not ap.is_absolute():
+            associations_path = str((base_dir / ap).resolve())
     reference = ReferenceConfig(
         fasta_path=str(ref_path.resolve()),
         name=cfg.reference.name,
@@ -104,4 +111,5 @@ def _resolve_paths(cfg: RunConfig, base_dir: Path) -> RunConfig:
         reference=reference,
         parameters=cfg.parameters,
         reads_path=reads_path,
+        associations_path=associations_path,
     )

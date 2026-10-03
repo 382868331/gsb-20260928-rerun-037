@@ -38,7 +38,7 @@
 ## 版本与历史批次
 
 分析规则版本记录在包常量 `variant_pipeline.ANALYSIS_VERSION`
-（当前 `fragment-provenance-v3`，包版本 `0.4.0`）。
+（当前 `linked-evidence-units-v4`，包版本 `0.5.0`）。
 
 `--outdir` 是**版本化结果库**的根目录：每次 `call` 都把结果发布为一个
 新的不可变版本目录 `outdir/runs/vNNNN/`（含 `manifest.json`），绝不覆盖
@@ -90,6 +90,47 @@ QNAME，也不会被误认为同一份片段；同一批片段中途保存后重
 选择记录位于 `selections/`，原 `runs/vNNNN` 输出哈希保持不变。导出版本时，
 除原有输出和 manifest 外还包含 `shared_evidence_audit.json`，其中保留足以复核
 共享关系的输入哈希、片段来源和歧义分组记录。
+
+## 同一原分子的关联片段
+
+关联关系是一份独立 JSON（可在配置中用 `associations_path` 指定，或调用
+`call --associations relations.json`）。每条关系显式记录两端的证据 ID、
+两端来源、分子身份、关系 ID/版本、方向和距离；证据 ID 含来源哈希前缀，
+因此同名但来源或分子身份不同的片段不会自动配对：
+
+```json
+{
+  "relations": [{
+    "association_id": "unit-0001",
+    "molecule_id": "original-molecule-1",
+    "a": "<source-hash>::read-a",
+    "b": "<source-hash>::read-b",
+    "source_id_a": "<source-hash>",
+    "source_id_b": "<source-hash>",
+    "orientation": "opposite",
+    "min_distance": 80,
+    "max_distance": 500,
+    "relation_id": "mate-rule-2026",
+    "relation_version": "1"
+  }]
+}
+```
+
+输出的 `evidence_units` 同时保留：
+- 每个端片段单独可支持的候选（`single_fragment_candidates`）；
+- 经方向、距离和来源核对后仍成立的组合（`valid_combinations`、`linked_candidates`）；
+- 被组合关系排除的候选（`excluded_candidates`）；
+- 一端迟到（`pending_endpoint`）、片段匹配不足（`match_insufficient`）和
+  关联依据矛盾（`relation_inconsistent`），不会静默丢弃任一端；
+- 重复导入、多个拆分片段和部分缺失均归入同一个可说明证据单元。
+
+一个证据单元可以支持多个不同位置的候选，但对任一候选最多形成一份独立支持，
+不会因为有多个拆分端而重复计票。撤回关系时，原单片段歧义恢复，而不是新增证据。
+
+人工采用可指定证据单元和规则：`select --evidence-unit unit-0001
+--relation-id mate-rule-2026 --rationale ...`。再次选择会把旧选择完整放入
+`history`，不覆盖旧选择；撤回后导出仍保留采用记录，审计可从支持数量追到原分子、
+端片段、关系 ID/版本以及排除依据。
 
 ## 输出
 

@@ -31,6 +31,7 @@ class CallResult:
     low_coverage: list[tuple[str, int, int, int]]  # chrom,start,end,min_depth
     ambiguity_groups: list[dict] = field(default_factory=list)
     fragment_sources: list[dict] = field(default_factory=list)
+    evidence_units: list[dict] = field(default_factory=list)
 
 
 def _overlaps(a: Variant, b: Variant) -> bool:
@@ -60,19 +61,27 @@ def _fragment_state(frag: Fragment, key: tuple, anchor: int) -> str:
 
 
 def _depth_arrays(
-    fragments: list[Fragment], references: dict[str, Reference]
+    fragments: list[Fragment], references: dict[str, Reference],
+    fragment_units: dict[str, str] | None = None,
 ) -> dict[str, tuple[list[int], list[int]]]:
+    fragment_units = fragment_units or {}
     raw = {
         name: [0] * (len(ref.sequence) + 2)
         for name, ref in references.items()
     }
+    counted_intervals: set[tuple[str, str, int, int]] = set()
     for frag in fragments:
         chroms = frag.chroms
+        unit_key = fragment_units.get(frag.evidence_id, frag.evidence_id)
         for start, end in frag.covered:
             chrom = next(iter(chroms)) if len(chroms) == 1 else None
             if chrom is None:
                 # Multi-contig fragment: spans cannot be assigned safely.
                 continue
+            interval_key = (unit_key, chrom, start, end)
+            if interval_key in counted_intervals:
+                continue
+            counted_intervals.add(interval_key)
             raw[chrom][start] += 1
             raw[chrom][end + 1] -= 1
     out: dict[str, tuple[list[int], list[int]]] = {}
@@ -90,6 +99,7 @@ def call_variants(
     fragments: list[Fragment],
     references: dict[str, Reference],
     params: Parameters,
+    association_relations: list | None = None,
 ) -> CallResult:
     fragment_sources = [
         {
@@ -108,16 +118,53 @@ def call_variants(
             grouped.setdefault(key, []).append(obs)
             variant_lookup[key] = obs.variant
 
-    candidates: list[CandidateEvidence] = []
+    candidate_results: list[CandidateEvidence] = []
+    resolved_units = []
+    if association_relations:
+        from .association import reconcile_associations, RESOLVED
+        resolved_units = [
+            unit.to_dict()
+            for unit in reconcile_associations(fragments, association_relations)
+            if unit.status == RESOLVED
+        ]
+
+    def association_context(fragment_id: str, variant_id: str):
+        for unit in resolved_units:
+            if fragment_id not in unit["fragment_ids"]:
+                continue
+            if variant_id in unit.get("excluded_candidates", []):
+                return "excluded", None
+            if variant_id in unit.get("linked_candidates", []):
+                return "linked", unit["association_id"]
+        return "unlinked", None
+
+    fragment_units = {
+        fragment_id: unit["association_id"]
+        for unit in resolved_units
+        for fragment_id in unit["fragment_ids"]
+    }
+    excluded_by_unit = {
+        unit["association_id"]: set(unit.get("excluded_candidates", []))
+        for unit in resolved_units
+    }
+    fragment_excluded: dict[str, set[str]] = {}
+    for unit in resolved_units:
+        excluded = set(unit.get("excluded_candidates", []))
+        for fragment_id, candidates in unit.get("single_fragment_candidates", {}).items():
+            fragment_excluded.setdefault(fragment_id, set()).update(
+                excluded & set(candidates))
+
     for key, observations in grouped.items():
         variant = variant_lookup[key]
         anchor = variant.pos
         chrom = variant.chrom
 
+        states_by_unit: dict[str, dict] = {}
         n_alt_pass = n_alt_low = n_ref = n_other = n_conflict = 0
         n_independent = n_shared = 0
         fwd_alt = rev_alt = fwd_ref = rev_ref = 0
         depth = passing_depth = 0
+        counted_depth_keys: set[str] = set()
         quals: list[int] = []
         fragment_ids: list[str] = []
         shared_with: dict[str, list[str]] = {}
@@ -125,48 +172,75 @@ def call_variants(
         for frag in fragments:
             if not _spans(frag, chrom, anchor):
                 continue
-            depth += 1
-            state = _fragment_state(frag, key, anchor)
+            depth_key = fragment_units.get(frag.evidence_id, frag.evidence_id)
+            if depth_key not in counted_depth_keys:
+                counted_depth_keys.add(depth_key)
+                depth += 1
+            association_state, unit_id = association_context(
+                frag.evidence_id, variant.vid)
+            support_key = unit_id or frag.evidence_id
+            if association_state == "excluded":
+                state = "other_alt"
+            else:
+                state = _fragment_state(frag, key, anchor)
+            if state == "other_alt":
+                excluded_here = {
+                    observation.variant.vid
+                    for other_key, observation in frag.alt.items()
+                    if other_key != key and _overlaps(variant, observation.variant)
+                } & fragment_excluded.get(frag.evidence_id, set())
+                if excluded_here:
+                    state = "uninformative"
             if state == "uninformative":
                 continue
-            passing_depth += 1
+            entry = states_by_unit.setdefault(support_key, {
+                "state": state, "fragment": frag, "unit_id": unit_id})
+            rank = {
+                "conflict": 4, "other_alt": 3, "alt_low": 2,
+                "alt_pass": 1, "ref": 0,
+            }
+            if rank[state] > rank[entry["state"]]:
+                entry.update(state=state, fragment=frag, unit_id=unit_id)
+
+        passing_depth = len(states_by_unit)
+        for support_key, entry in states_by_unit.items():
+            state = entry["state"]
+            frag = entry["fragment"]
+            unit_id = entry["unit_id"]
+            if state in ("alt_pass", "alt_low"):
+                fragment_ids.append(support_key)
             if state == "alt_pass":
                 n_alt_pass += 1
-                fragment_ids.append(frag.evidence_id)
                 other_ids = [
                     other.variant.vid
                     for other_key, other in frag.alt.items()
                     if other_key != key and _overlaps(variant, other.variant)
+                    and other.variant.vid not in excluded_by_unit.get(unit_id, set())
                 ]
                 if other_ids:
                     n_shared += 1
-                    shared_with[frag.evidence_id] = sorted(set(other_ids))
+                    shared_with[support_key] = sorted(set(other_ids))
                 else:
                     n_independent += 1
                 quals.extend(frag.alt[key].base_quals)
-                if frag.strand == "R":
-                    rev_alt += 1
-                else:
-                    fwd_alt += 1
+                fwd_alt += frag.strand != "R"
+                rev_alt += frag.strand == "R"
             elif state == "alt_low":
                 n_alt_low += 1
-                fragment_ids.append(frag.evidence_id)
                 other_ids = [
                     other.variant.vid
                     for other_key, other in frag.alt.items()
                     if other_key != key and _overlaps(variant, other.variant)
+                    and other.variant.vid not in excluded_by_unit.get(unit_id, set())
                 ]
                 if other_ids:
                     n_shared += 1
-                    shared_with[frag.evidence_id] = sorted(set(other_ids))
                 else:
                     n_independent += 1
             elif state == "ref":
                 n_ref += 1
-                if frag.strand == "R":
-                    rev_ref += 1
-                else:
-                    fwd_ref += 1
+                fwd_ref += frag.strand != "R"
+                rev_ref += frag.strand == "R"
             elif state == "other_alt":
                 n_other += 1
             elif state == "conflict":
@@ -210,18 +284,26 @@ def call_variants(
             low_quality_fraction_threshold=params.low_quality_fraction_threshold,
         )
         ev.shared_with = shared_with
-        candidates.append(ev)
+        candidate_results.append(ev)
 
-    candidates.sort(key=lambda e: (e.chrom, e.pos, e.alt))
-    depth_maps = _depth_arrays(fragments, references)
+    candidate_results.sort(key=lambda e: (e.chrom, e.pos, e.alt))
+    depth_maps = _depth_arrays(fragments, references, fragment_units)
     coverage, low = _coverage_report(depth_maps, params.low_coverage_depth)
-    ambiguity_groups = _ambiguity_groups(candidates)
+    ambiguity_groups = _ambiguity_groups(candidate_results)
+    evidence_units = []
+    if association_relations:
+        from .association import reconcile_associations
+        evidence_units = [
+            unit.to_dict()
+            for unit in reconcile_associations(fragments, association_relations)
+        ]
     return CallResult(
-        candidates=candidates,
+        candidates=candidate_results,
         coverage=coverage,
         low_coverage=low,
         ambiguity_groups=ambiguity_groups,
         fragment_sources=fragment_sources,
+        evidence_units=evidence_units,
     )
 
 

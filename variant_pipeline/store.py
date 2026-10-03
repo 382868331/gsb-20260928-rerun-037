@@ -79,7 +79,8 @@ class RunStore:
 
     def fingerprint(self, *, config_dict: dict, reads_path: str,
                     fasta_path: str,
-                    extra_read_paths: list[str] | tuple[str, ...] = ()) -> str:
+                    extra_read_paths: list[str] | tuple[str, ...] = (),
+                    associations_path: str | None = None) -> str:
         """Stable identity of one analysis request.
 
         Binds the exact inputs (reads + reference bytes), the full run
@@ -97,6 +98,10 @@ class RunStore:
                     {"sha256": sha256_file(path)}
                     for path in extra_read_paths
                 ],
+                "associations_sha256": (
+                    sha256_file(associations_path)
+                    if associations_path else None
+                ),
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -112,7 +117,8 @@ class RunStore:
     def publish(self, outputs: dict[str, str | Path], *,
                 config_dict: dict, reads_path: str, fasta_path: str,
                 fingerprint: str,
-                extra_read_paths: list[str] | tuple[str, ...] = ()) -> VersionInfo:
+                extra_read_paths: list[str] | tuple[str, ...] = (),
+                associations_path: str | None = None) -> VersionInfo:
         """Publish a new version atomically; never touches old versions.
 
         ``outputs`` maps output filenames to the staged file paths to
@@ -153,6 +159,11 @@ class RunStore:
                         }
                         for path in extra_read_paths
                     ],
+                    "associations_path": str(associations_path) if associations_path else None,
+                    "associations_sha256": (
+                        sha256_file(associations_path)
+                        if associations_path else None
+                    ),
                 },
                 "outputs": output_hashes,
             }
@@ -252,8 +263,16 @@ class RunStore:
             "analysis_version": info.manifest.get("analysis_version"),
             "inputs": info.manifest.get("inputs", {}),
             "fragment_sources": payload.get("fragment_sources", []),
+            "evidence_units": payload.get("evidence_units", []),
             "ambiguity_groups": groups,
+            "provisional_selection": self.selection_record(version),
         }
+
+    def selection_record(self, version: str) -> dict | None:
+        path = self.root / "selections" / f"{version.replace('/', '_')}.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
 
     # -- internals -------------------------------------------------------
 

@@ -1,4 +1,4 @@
-"""Provisional interpretation choices and shared-evidence reconciliation."""
+"""Provisional interpretation choices and evidence reconciliation."""
 
 from __future__ import annotations
 
@@ -11,6 +11,11 @@ from pathlib import Path
 from .store import RunStore, VersionInfo, sha256_text
 
 SELECTIONS_DIRNAME = "selections"
+_HISTORY_FIELDS = (
+    "selection_id", "selected_variant_id", "evidence_unit_id", "relation_id",
+    "relation_version", "rationale", "excluded_variant_ids", "adopted_basis",
+    "created_at", "superseded_at",
+)
 
 
 @dataclass(frozen=True)
@@ -18,7 +23,7 @@ class Selection:
     selection_id: str
     base_version: str
     selected_variant_id: str | None
-    status: str  # provisional | withdrawn
+    status: str
 
 
 def selection_path(store: RunStore, version: str) -> Path:
@@ -26,39 +31,83 @@ def selection_path(store: RunStore, version: str) -> Path:
     return store.root / SELECTIONS_DIRNAME / f"{safe}.json"
 
 
+def _payload(info: VersionInfo) -> dict:
+    return json.loads((info.path / "candidates.json").read_text(encoding="utf-8"))
+
+
 def save_selection(
     store: RunStore,
     version: str,
     selected_variant_id: str,
+    evidence_unit_id: str | None = None,
+    relation_id: str | None = None,
+    rationale: str | None = None,
 ) -> Selection:
     info = store.verify(version)
-    candidates = {
-        c["variant_id"] for c in json.loads(
-            (info.path / "candidates.json").read_text(encoding="utf-8")
-        ).get("candidates", [])
-    }
+    payload = _payload(info)
+    candidates = {c["variant_id"] for c in payload.get("candidates", [])}
     if selected_variant_id not in candidates:
         raise ValueError(f"unknown candidate in {version}: {selected_variant_id}")
+
     target = selection_path(store, version)
-    existing = None
-    if target.is_file():
-        existing = json.loads(target.read_text(encoding="utf-8"))
-        if existing.get("status") == "provisional":
+    existing = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else None
+    history = list(existing.get("history", [])) if existing else []
+    if existing and existing.get("status") == "provisional":
+        archived = {key: existing.get(key) for key in _HISTORY_FIELDS}
+        history.append(archived)
+
+    unit = None
+    if evidence_unit_id:
+        unit = next((u for u in payload.get("evidence_units", [])
+                     if u.get("association_id") == evidence_unit_id), None)
+        if unit is None:
+            raise ValueError(f"unknown evidence unit in {version}: {evidence_unit_id}")
+        if selected_variant_id not in unit.get("linked_candidates", []):
             raise ValueError(
-                f"{version} already has provisional selection "
-                f"{existing.get('selected_variant_id')}; withdraw it first"
+                f"selected variant {selected_variant_id} is not supported by "
+                f"linked evidence unit {evidence_unit_id}")
+
+    selected_group = None
+    excluded: list[str] = []
+    adopted_basis = "ambiguity_group"
+    if unit is not None:
+        single = {
+            candidate
+            for values in unit.get("single_fragment_candidates", {}).values()
+            for candidate in values
+        }
+        excluded = sorted(single - set(unit.get("linked_candidates", [])))
+        adopted_basis = "evidence_unit_relation"
+    else:
+        selected_group = next(
+            (group for group in payload.get("ambiguity_groups", [])
+             if selected_variant_id in group.get("candidate_variant_ids", [])),
+            None,
+        )
+        if selected_group is not None:
+            excluded = sorted(
+                set(selected_group.get("candidate_variant_ids", []))
+                - {selected_variant_id}
             )
+
     record = {
-        "selection_id": existing.get("selection_id") if existing else sha256_text(
-            f"{version}:{selected_variant_id}")[:16],
+        "selection_id": sha256_text(
+            f"{version}:{selected_variant_id}:{relation_id}:{evidence_unit_id}:{len(history)}"
+        )[:16],
         "base_version": version,
         "selected_variant_id": selected_variant_id,
         "status": "provisional",
+        "evidence_unit_id": evidence_unit_id,
+        "relation_id": relation_id or (unit or {}).get("relation_id"),
+        "relation_version": (unit or {}).get("relation_version"),
+        "rationale": rationale,
+        "excluded_variant_ids": excluded,
+        "adopted_basis": adopted_basis,
         "supersedes": existing.get("selection_id") if existing else None,
+        "history": history,
     }
     _write_json(target, record)
-    return Selection(
-        record["selection_id"], version, selected_variant_id, "provisional")
+    return Selection(record["selection_id"], version, selected_variant_id, "provisional")
 
 
 def withdraw_selection(store: RunStore, version: str) -> Selection:
@@ -71,8 +120,7 @@ def withdraw_selection(store: RunStore, version: str) -> Selection:
     record["status"] = "withdrawn"
     _write_json(target, record)
     return Selection(
-        record["selection_id"], version,
-        record.get("selected_variant_id"), "withdrawn")
+        record["selection_id"], version, record.get("selected_variant_id"), "withdrawn")
 
 
 def load_selection(store: RunStore, version: str) -> dict | None:
@@ -83,9 +131,10 @@ def load_selection(store: RunStore, version: str) -> dict | None:
     return record if record.get("status") == "provisional" else None
 
 
-def selected_view(info: VersionInfo, selected_variant_id: str) -> dict:
-    payload = json.loads(
-        (info.path / "candidates.json").read_text(encoding="utf-8"))
+def selected_view(info: VersionInfo, selected_variant_id: str,
+                  decision: dict | None = None) -> dict:
+    payload = _payload(info)
+    decision = decision or {}
     selected_group = next(
         (group for group in payload.get("ambiguity_groups", [])
          if selected_variant_id in group.get("candidate_variant_ids", [])),
@@ -95,53 +144,85 @@ def selected_view(info: VersionInfo, selected_variant_id: str) -> dict:
     if selected_group is not None:
         assigned_ids = {
             record["fragment_id"]
-            for record in selected_group["shared_fragments"]
+            for record in selected_group.get("shared_fragments", [])
             if selected_variant_id in record.get("supports", [])
         }
+
+    selected_unit = None
+    unit_ids: set[str] = set()
+    if decision.get("evidence_unit_id"):
+        selected_unit = next(
+            (unit for unit in payload.get("evidence_units", [])
+             if unit.get("association_id") == decision.get("evidence_unit_id")),
+            None,
+        )
+        if selected_unit is not None:
+            unit_ids = {
+                variant_id
+                for values in selected_unit.get("single_fragment_candidates", {}).values()
+                for variant_id in values
+            }
+
     candidates = []
-    for candidate in payload["candidates"]:
-        candidate = json.loads(json.dumps(candidate))
-        if selected_group is None:
+    group_ids = set(selected_group.get("candidate_variant_ids", [])) if selected_group else set()
+    excluded_by_decision = set(decision.get("excluded_variant_ids", []))
+    for original in payload["candidates"]:
+        candidate = json.loads(json.dumps(original))
+        variant_id = candidate["variant_id"]
+
+        if selected_unit is not None and variant_id in unit_ids:
+            if variant_id == selected_variant_id:
+                candidate["selection_state"] = "provisionally_selected"
+                candidate["status_note"] = (
+                    "selected linked evidence-unit interpretation; "
+                    "the unit remains one independent evidence source")
+            elif variant_id in excluded_by_decision:
+                candidate["selection_state"] = "excluded_by_provisional_choice"
+                candidate["status_note"] = "excluded only under the recorded relation version"
+            else:
+                candidate["selection_state"] = "linked_support_unchanged"
+            candidates.append(candidate)
+            continue
+
+        if variant_id not in group_ids:
             candidate["selection_state"] = (
-                "provisionally_selected"
-                if candidate["variant_id"] == selected_variant_id
-                else "unchanged"
-            )
+                "provisionally_selected" if variant_id == selected_variant_id else "unchanged")
             candidates.append(candidate)
             continue
-        if candidate["variant_id"] not in selected_group["candidate_variant_ids"]:
-            candidates.append(candidate)
-            continue
+
         support = candidate["supporting_evidence"]
-        if candidate["variant_id"] == selected_variant_id:
+        if variant_id == selected_variant_id:
             candidate["selection_state"] = "provisionally_selected"
             support["provisional_independent_alt_fragments"] = (
                 support["independent_alt_fragments"] + len(assigned_ids))
-            candidate["status_note"] = (
-                "shared ambiguous fragments are assigned only in this temporary view")
+            candidate["status_note"] = "ambiguous fragment assigned only in this temporary view"
         else:
             candidate["selection_state"] = "deprioritized_by_provisional_choice"
             retained_shared = sum(
                 1
                 for record in selected_group["shared_fragments"]
-                if candidate["variant_id"] in record.get("supports", [])
-                and selected_variant_id not in record.get("supports", [])
-            )
+                if variant_id in record.get("supports", [])
+                and selected_variant_id not in record.get("supports", []))
             support["provisional_independent_alt_fragments"] = (
                 support["independent_alt_fragments"] + retained_shared)
-            candidate["status_note"] = (
-                "shared ambiguous fragments are assigned to the selected candidate "
-                "in this temporary view and add no evidence here")
+            candidate["status_note"] = "assigned ambiguous fragment adds no evidence here"
         support["provisional_assigned_shared_fragment_count"] = len(assigned_ids)
         candidates.append(candidate)
+
+    excluded = excluded_by_decision if decision else group_ids - {selected_variant_id}
     payload["candidates"] = candidates
     payload["provisional_selection"] = {
         "base_version": info.version,
         "selected_variant_id": selected_variant_id,
         "does_not_modify_base_version": True,
-        "ambiguity_group_id": (
-            selected_group["group_id"] if selected_group else None),
+        "ambiguity_group_id": selected_group["group_id"] if selected_group else None,
         "assigned_fragment_ids": sorted(assigned_ids),
+        "excluded_variant_ids": sorted(excluded),
+        "evidence_unit_id": decision.get("evidence_unit_id"),
+        "relation_id": decision.get("relation_id"),
+        "relation_version": decision.get("relation_version"),
+        "adopted_basis": decision.get("adopted_basis", "ambiguity_group"),
+        "rationale": decision.get("rationale"),
     }
     return payload
 

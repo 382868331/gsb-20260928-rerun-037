@@ -80,6 +80,7 @@ def build_payload(cfg: RunConfig, result: CallResult) -> dict:
             for c, s, e, d in result.low_coverage
         ],
         "ambiguity_groups": result.ambiguity_groups,
+        "evidence_units": result.evidence_units,
         "fragment_sources": result.fragment_sources,
     }
 
@@ -151,7 +152,29 @@ def render_text_report(payload: dict) -> str:
         )
         if cand["flags"]:
             lines.append("  标记: " + ", ".join(cand["flags"]))
-        lines.append("")
+    lines.append("")
+    lines.append("同一原分子关联证据单元 (单片段候选与关联后候选分列)")
+    lines.append("-" * 68)
+    units = payload.get("evidence_units", [])
+    if not units:
+        lines.append("无")
+    else:
+        for unit in units:
+            lines.append(
+                f"  {unit['association_id']} [分子={unit['molecule_id']}] "
+                f"状态={unit['status']} 独立证据单元={unit['independent_evidence_units']}"
+            )
+            for fid, variants in unit["single_fragment_candidates"].items():
+                lines.append(f"    单片段 {fid}: {', '.join(variants) if variants else '无匹配'}")
+            lines.append(
+                "    关联后成立: "
+                + (", ".join(unit["linked_candidates"]) if unit["linked_candidates"] else "无")
+            )
+            if unit["excluded_candidates"]:
+                lines.append("    关联排除: " + ", ".join(unit["excluded_candidates"]))
+            for issue in unit.get("issues", []):
+                lines.append(f"    [{issue['code']}] {issue['message']}")
+    lines.append("")
     low = payload["low_coverage_regions"]
     lines.append("共享歧义片段 (独立支持与共享证据分列)")
     lines.append("-" * 68)

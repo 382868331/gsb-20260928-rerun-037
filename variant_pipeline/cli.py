@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     call.add_argument("--reads", help="SAM path (overrides config reads_path)")
     call.add_argument("--extra-reads", action="append", default=[],
                       help="additional SAM batch; repeatable")
+    call.add_argument("--associations", help="JSON file of explicit same-molecule fragment relations")
     call.add_argument("--outdir", required=True,
                       help="versioned run store root directory")
     call.add_argument("--force", action="store_true",
@@ -65,6 +66,9 @@ def build_parser() -> argparse.ArgumentParser:
     select.add_argument("--outdir", required=True)
     select.add_argument("--version", required=True)
     select.add_argument("--variant", required=True)
+    select.add_argument("--evidence-unit", help="association unit ID adopted for this interpretation")
+    select.add_argument("--relation-id")
+    select.add_argument("--rationale")
 
     withdraw = sub.add_parser(
         "withdraw", help="withdraw a provisional interpretation choice")
@@ -102,11 +106,14 @@ def _cmd_call(args) -> int:
     config_dict = cfg.to_dict()
     if args.reads:
         config_dict["reads_path"] = args.reads
+    if args.associations:
+        config_dict["associations_path"] = args.associations
     fingerprint = store.fingerprint(
         config_dict=config_dict,
         reads_path=reads,
         fasta_path=cfg.reference.fasta_path,
         extra_read_paths=args.extra_reads,
+        associations_path=args.associations or cfg.associations_path,
     )
     if not args.force:
         duplicate = store.find_duplicate(fingerprint)
@@ -119,10 +126,10 @@ def _cmd_call(args) -> int:
 
     read_paths = [reads] + args.extra_reads
     if len(read_paths) == 1:
-        result = run(cfg, reads)
+        result = run(cfg, reads, args.associations or cfg.associations_path)
     else:
         from .pipeline import run_many
-        result = run_many(cfg, read_paths)
+        result = run_many(cfg, read_paths, args.associations or cfg.associations_path)
     payload = build_payload(cfg, result)
     text = render_text_report(payload)
     with tempfile.TemporaryDirectory(
@@ -140,6 +147,7 @@ def _cmd_call(args) -> int:
             reads_path=reads,
             fasta_path=cfg.reference.fasta_path,
             extra_read_paths=args.extra_reads,
+            associations_path=args.associations or cfg.associations_path,
             fingerprint=fingerprint,
         )
     print(text)
@@ -180,7 +188,10 @@ def _cmd_compare(args) -> int:
 
 
 def _cmd_select(args) -> int:
-    selection = save_selection(RunStore(args.outdir), args.version, args.variant)
+    selection = save_selection(
+        RunStore(args.outdir), args.version, args.variant,
+        evidence_unit_id=args.evidence_unit, relation_id=args.relation_id,
+        rationale=args.rationale)
     print(f"[selection] 已临时选择 {selection.selected_variant_id}; "
           f"原分析版本 {selection.base_version} 未修改")
     return 0
@@ -197,8 +208,9 @@ def _cmd_selected_view(args) -> int:
     decision = load_selection(store, args.version)
     if decision is None:
         raise StoreError(f"no provisional selection for {args.version}")
-    payload = selected_view(store.verify(args.version),
-                            decision["selected_variant_id"])
+    payload = selected_view(
+        store.verify(args.version),
+        decision["selected_variant_id"], decision)
     text = json.dumps(payload, indent=2, ensure_ascii=False)
     print(text)
     if args.json_out:
