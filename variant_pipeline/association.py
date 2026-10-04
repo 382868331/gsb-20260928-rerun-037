@@ -75,12 +75,40 @@ class EvidenceUnitResult:
         return asdict(self)
 
 
-def _fragment_id(fragment: Any) -> str:
-    return str(getattr(fragment, "evidence_id", None) or fragment["fragment_id"])
-
-
 def _source_id(fragment: Any) -> str:
     return str(getattr(fragment, "source_id", None) or fragment.get("source_id", ""))
+
+
+def _local_id(fragment: Any) -> str:
+    """Fragment identifier within its source (display name, no source prefix)."""
+    qname = getattr(fragment, "qname", None)
+    if qname is not None:
+        return str(qname)
+    raw = fragment.get("fragment_id", "") if isinstance(fragment, dict) else ""
+    raw = str(raw)
+    source = _source_id(fragment)
+    prefix = f"{source}::"
+    if source and raw.startswith(prefix):
+        return raw[len(prefix):]
+    return raw
+
+
+def _qualified_id(fragment: Any) -> str:
+    """Source-qualified identity: same display name from different sources
+    stays distinct; only the same (source, id) pair collapses."""
+    evidence_id = getattr(fragment, "evidence_id", None)
+    if evidence_id:
+        return str(evidence_id)
+    source = _source_id(fragment)
+    local = _local_id(fragment)
+    return f"{source}::{local}" if source else local
+
+
+def _qualify_endpoint(endpoint: str, source: str) -> str:
+    """Source-qualified form of a relation endpoint for diagnostics."""
+    if not source or "::" in endpoint:
+        return endpoint
+    return f"{source}::{endpoint}"
 
 
 def fragment_placements(fragment: Any) -> list[CandidatePlacement]:
@@ -114,16 +142,43 @@ def fragment_placements(fragment: Any) -> list[CandidatePlacement]:
     return placements
 
 
-def _index_fragments(fragments: Iterable[Any]) -> tuple[dict[str, Any], list[str]]:
-    index: dict[str, Any] = {}
+def _index_fragments(
+    fragments: Iterable[Any],
+) -> tuple[dict[str, Any], dict[tuple[str, str], str], list[str]]:
+    """Index fragments by qualified identity and by (source, local id).
+
+    The same display name imported from different sources is kept as
+    distinct fragments; only a repeated (source, id) pair is a duplicate
+    import, and the first occurrence wins deterministically.
+    """
+    by_qualified: dict[str, Any] = {}
+    by_pair: dict[tuple[str, str], str] = {}
     duplicates: list[str] = []
     for fragment in fragments:
-        fid = _fragment_id(fragment)
-        if fid in index:
-            duplicates.append(fid)
-        else:
-            index[fid] = fragment
-    return index, duplicates
+        qualified = _qualified_id(fragment)
+        if qualified in by_qualified:
+            duplicates.append(qualified)
+            continue
+        by_qualified[qualified] = fragment
+        by_pair[(_source_id(fragment), _local_id(fragment))] = qualified
+    return by_qualified, by_pair, duplicates
+
+
+def _resolve_endpoint(
+    endpoint: str,
+    source: str,
+    by_qualified: dict[str, Any],
+    by_pair: dict[tuple[str, str], str],
+) -> str | None:
+    """Locate an endpoint by source and fragment identifier jointly.
+
+    Accepts either a source-qualified evidence id or a bare display name
+    combined with the endpoint's declared source; never falls back to a
+    display-name-only match across sources.
+    """
+    if endpoint in by_qualified:
+        return endpoint
+    return by_pair.get((source, endpoint))
 
 
 def _orientation_ok(first: CandidatePlacement, second: CandidatePlacement,
@@ -164,16 +219,34 @@ def reconcile_associations(
     fragments: Iterable[Any],
     relations: Iterable[AssociationRelation],
 ) -> list[EvidenceUnitResult]:
-    fragment_index, imported_duplicates = _index_fragments(fragments)
+    by_qualified, by_pair, imported_duplicates = _index_fragments(fragments)
     results: list[EvidenceUnitResult] = []
     for relation in relations:
-        endpoint_ids = [relation.a, relation.b]
-        present = [fid for fid in dict.fromkeys(endpoint_ids) if fid in fragment_index]
-        missing = [fid for fid in dict.fromkeys(endpoint_ids) if fid not in fragment_index]
-        duplicate_fragment_ids = sorted(set(imported_duplicates) & set(endpoint_ids))
+        endpoint_specs = [
+            (relation.a, relation.source_id_a),
+            (relation.b, relation.source_id_b),
+        ]
+        resolved: dict[str, str | None] = {}
+        for endpoint, source in endpoint_specs:
+            key = f"{source}::{endpoint}"
+            if key not in resolved:
+                resolved[key] = _resolve_endpoint(
+                    endpoint, source, by_qualified, by_pair)
+        # Canonical endpoint identity is source-qualified, so same-named
+        # fragments from different sources stay distinguishable everywhere
+        # (status, combinations, diagnostics).
+        endpoint_ids = [
+            resolved[f"{source}::{endpoint}"] or _qualify_endpoint(endpoint, source)
+            for endpoint, source in endpoint_specs
+        ]
+        present = [
+            fid for fid in dict.fromkeys(endpoint_ids) if fid in by_qualified]
+        missing = [
+            fid for fid in dict.fromkeys(endpoint_ids) if fid not in by_qualified]
+        duplicate_fragment_ids = sorted(set(imported_duplicates) & set(present))
 
         single = {
-            fid: sorted({p.variant_id for p in fragment_placements(fragment_index[fid])})
+            fid: sorted({p.variant_id for p in fragment_placements(by_qualified[fid])})
             for fid in present
         }
         issues: list[dict[str, str]] = []
@@ -207,16 +280,18 @@ def reconcile_associations(
                 independent_evidence_units=1 if present else 0))
             continue
 
-        expected_sources = {relation.a: relation.source_id_a, relation.b: relation.source_id_b}
-        for fid in present:
-            fragment = fragment_index[fid]
-            if _source_id(fragment) != expected_sources[fid]:
+        for (endpoint, expected_source), qualified in zip(
+                endpoint_specs, endpoint_ids):
+            if qualified not in by_qualified:
+                continue
+            fragment = by_qualified[qualified]
+            if _source_id(fragment) != expected_source:
                 issues.append({
                     "code": RELATION_INCONSISTENT,
-                    "fragment_id": fid,
+                    "fragment_id": qualified,
                     "message": (
                         f"source {_source_id(fragment)!r} does not match association "
-                        f"endpoint source {expected_sources[fid]!r}"),
+                        f"endpoint source {expected_source!r}"),
                 })
 
         if missing:
@@ -238,15 +313,15 @@ def reconcile_associations(
         elif issues:
             status = RELATION_INCONSISTENT
         else:
-            placements_a = fragment_placements(fragment_index[relation.a])
-            placements_b = fragment_placements(fragment_index[relation.b])
+            placements_a = fragment_placements(by_qualified[endpoint_ids[0]])
+            placements_b = fragment_placements(by_qualified[endpoint_ids[1]])
             all_pairs: list[tuple[CandidatePlacement, CandidatePlacement,
                                   dict[str, str]]] = []
             for first in placements_a:
                 for second in placements_b:
                     pair = {
-                        relation.a: first.variant_id,
-                        relation.b: second.variant_id,
+                        endpoint_ids[0]: first.variant_id,
+                        endpoint_ids[1]: second.variant_id,
                         "chrom": first.chrom,
                         "distance": str(second.pos - first.pos),
                     }
@@ -310,14 +385,14 @@ def reconcile_associations(
             linked = sorted({
                 candidate
                 for combo in valid
-                for candidate in (combo[relation.a], combo[relation.b])
+                for candidate in (combo[endpoint_ids[0]], combo[endpoint_ids[1]])
             })
             valid_combinations = valid
             relation_excluded_sorted = sorted(
                 relation_excluded,
                 key=lambda combo: (
-                    str(combo.get(relation.a, "")),
-                    str(combo.get(relation.b, "")),
+                    str(combo.get(endpoint_ids[0], "")),
+                    str(combo.get(endpoint_ids[1], "")),
                     str(combo.get("chrom", "")),
                     str(combo.get("distance", ""))))
         else:

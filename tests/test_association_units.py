@@ -282,3 +282,110 @@ def test_revised_association_restores_original_single_fragment_ambiguity():
     assert by_id["c:g.4T>A"].alt_fragments == 1
     assert by_id["c:g.4T>G"].alt_fragments == 1
     assert result.evidence_units[0]["status"] == "revised"
+
+
+def test_same_display_name_different_sources_resolve_by_source_and_id():
+    # Endpoints are located by (source, fragment id) jointly: the same
+    # display name from two sources is kept as two distinct fragments and
+    # the relation resolves identically regardless of import order.
+    def make():
+        return [
+            _fragment("dup", "s1", [(4, "A")], "F"),
+            _fragment("dup", "s2", [(8, "A")], "R"),
+        ]
+    relation = AssociationRelation(
+        "unit-1", "mol-1", "dup", "dup", "s1", "s2",
+        orientation="opposite", min_distance=4, max_distance=4)
+    outcomes = []
+    for fragments in (make(), make()[::-1]):
+        result = call_variants(fragments, {"c": REF}, PARAMS, [relation])
+        unit = result.evidence_units[0]
+        by_id = {c.variant_id: c for c in result.candidates}
+        outcomes.append((
+            unit["status"], unit["valid_combinations"],
+            unit["independent_evidence_units"],
+            by_id["c:g.4T>A"].alt_fragments, by_id["c:g.8T>A"].alt_fragments,
+            by_id["c:g.4T>A"].depth, by_id["c:g.8T>A"].depth))
+    assert outcomes[0] == outcomes[1]
+    status, combinations, units, alt_a, alt_b, depth_a, depth_b = outcomes[0]
+    assert status == RESOLVED
+    assert combinations == [{
+        "s1::dup": "c:g.4T>A", "s2::dup": "c:g.8T>A",
+        "chrom": "c", "distance": "4"}]
+    assert (units, alt_a, alt_b, depth_a, depth_b) == (1, 1, 1, 1, 1)
+    # Neither source is collapsed as a duplicate import; diagnostics carry
+    # the source-qualified identity of each endpoint.
+    assert unit["duplicate_fragment_ids"] == []
+    assert not any(i["code"] == "duplicate_import" for i in unit["issues"])
+    assert unit["fragment_ids"] == ["s1::dup", "s2::dup"]
+    assert unit["present_fragment_ids"] == ["s1::dup", "s2::dup"]
+    assert set(unit["single_fragment_candidates"]) == {"s1::dup", "s2::dup"}
+
+
+def test_same_display_name_same_source_reimport_is_one_duplicate_unit():
+    # A genuine repeated import (same source, same id) still collapses into
+    # one evidence unit and is reported as a duplicate import.
+    fragments = [
+        _fragment("dup", "s1", [(4, "A")], "F"),
+        _fragment("dup", "s1", [(4, "A")], "F"),
+        _fragment("other", "s1", [(8, "A")], "R"),
+    ]
+    relation = _relation(
+        "dup", "other", orientation="opposite", min_distance=4, max_distance=4)
+    outcomes = []
+    for order in (fragments, fragments[::-1]):
+        result = reconcile_associations(order, [relation])[0]
+        outcomes.append((result.status, result.valid_combinations,
+                         result.duplicate_fragment_ids))
+    assert outcomes[0] == outcomes[1]
+    result = reconcile_associations(fragments, [relation])[0]
+    assert result.status == RESOLVED
+    assert result.duplicate_fragment_ids == ["s1::dup"]
+    assert any(i["code"] == "duplicate_import" for i in result.issues)
+    assert result.independent_evidence_units == 1
+
+
+def test_missing_endpoint_reports_source_qualified_identity():
+    present = _fragment("dup", "s1", [(4, "A")], "F")
+    relation = AssociationRelation(
+        "unit-1", "mol-1", "dup", "dup", "s1", "s2")
+    result = reconcile_associations([present], [relation])[0]
+    assert result.status == PENDING
+    assert result.present_fragment_ids == ["s1::dup"]
+    # The missing end is reported with its own source, not merged with the
+    # same-named fragment that did arrive from the other source.
+    assert result.missing_fragment_ids == ["s2::dup"]
+    issue = next(i for i in result.issues if i["code"] == PENDING)
+    assert issue["fragment_id"] == "s2::dup"
+
+
+def test_cross_source_same_name_conflicting_alleles_abstain_consistently():
+    def make():
+        return [
+            _fragment("dup", "s1", [(4, "A")], "F"),
+            _fragment("dup", "s2", [(4, "G")], "R"),
+        ]
+    relation = AssociationRelation(
+        "unit-1", "mol-1", "dup", "dup", "s1", "s2", orientation="opposite")
+    outcomes = []
+    for fragments in (make(), make()[::-1]):
+        result = call_variants(fragments, {"c": REF}, PARAMS, [relation])
+        unit = result.evidence_units[0]
+        by_id = {c.variant_id: c for c in result.candidates}
+        outcomes.append((
+            unit["status"], unit["conflicting_candidates"],
+            unit["conflicting_combinations"],
+            unit["independent_evidence_units"],
+            by_id["c:g.4T>A"].alt_fragments, by_id["c:g.4T>G"].alt_fragments,
+            by_id["c:g.4T>A"].conflicting_overlap_fragments,
+            by_id["c:g.4T>G"].conflicting_overlap_fragments,
+            by_id["c:g.4T>A"].depth, by_id["c:g.4T>G"].depth))
+    assert outcomes[0] == outcomes[1]
+    (status, conflicting, combinations, units, alt_a, alt_g,
+     conf_a, conf_g, depth_a, depth_g) = outcomes[0]
+    assert status == MOLECULE_CONFLICT
+    assert conflicting == ["c:g.4T>A", "c:g.4T>G"]
+    assert combinations[0]["a_variant_id"] == "c:g.4T>A"
+    assert combinations[0]["b_variant_id"] == "c:g.4T>G"
+    assert (units, alt_a, alt_g, conf_a, conf_g, depth_a, depth_g) == (
+        1, 0, 0, 1, 1, 1, 1)
