@@ -19,6 +19,7 @@ MATCH_INSUFFICIENT = "match_insufficient"
 RELATION_INCONSISTENT = "relation_inconsistent"
 RESOLVED = "resolved"
 REVISED = "revised"
+MOLECULE_CONFLICT = "molecule_conflict"
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ class EvidenceUnitResult:
     valid_combinations: list[dict[str, str]]
     issues: list[dict[str, str]] = field(default_factory=list)
     independent_evidence_units: int = 0
+    excluded_combinations: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -144,6 +146,36 @@ def _distance_ok(first: CandidatePlacement, second: CandidatePlacement,
     return True
 
 
+def _placements_conflict(first: CandidatePlacement,
+                         second: CandidatePlacement) -> bool:
+    """Two endpoints of one molecule disagree at an overlapping site."""
+    return (
+        first.chrom == second.chrom
+        and first.variant_id != second.variant_id
+        and first.pos <= second.end
+        and second.pos <= first.end
+    )
+
+
+def _conflict_issue(first: CandidatePlacement, second: CandidatePlacement,
+                    endpoint_ids: list[str]) -> dict[str, str]:
+    """Swap-invariant conflict basis: endpoint order never picks an answer."""
+    start = max(first.pos, second.pos)
+    end = min(first.end, second.end)
+    variants = sorted((first.variant_id, second.variant_id))
+    fragments = sorted(endpoint_ids)
+    return {
+        "code": MOLECULE_CONFLICT,
+        "fragment_id": ",".join(fragments),
+        "site": f"{first.chrom}:{start}-{end}",
+        "variants": ",".join(variants),
+        "message": (
+            f"intra-molecule conflict at {first.chrom}:{start}-{end}: "
+            f"{variants[0]} vs {variants[1]}; both endpoints are retained "
+            "and neither is preferred"),
+    }
+
+
 def reconcile_associations(
     fragments: Iterable[Any],
     relations: Iterable[AssociationRelation],
@@ -161,6 +193,7 @@ def reconcile_associations(
             for fid in present
         }
         issues: list[dict[str, str]] = []
+        excluded_combinations: list[dict[str, str]] = []
 
         if relation.status == "withdrawn":
             results.append(EvidenceUnitResult(
@@ -219,9 +252,18 @@ def reconcile_associations(
             placements_a = fragment_placements(fragment_index[relation.a])
             placements_b = fragment_placements(fragment_index[relation.b])
             valid = []
+            conflicts: dict[tuple, tuple[CandidatePlacement, CandidatePlacement]] = {}
             for first in placements_a:
                 for second in placements_b:
-                    if (_orientation_ok(first, second, relation.orientation)
+                    if _placements_conflict(first, second):
+                        key = (
+                            first.chrom,
+                            max(first.pos, second.pos),
+                            min(first.end, second.end),
+                            tuple(sorted((first.variant_id, second.variant_id))),
+                        )
+                        conflicts.setdefault(key, (first, second))
+                    elif (_orientation_ok(first, second, relation.orientation)
                             and _distance_ok(first, second, relation)):
                         valid.append({
                             relation.a: first.variant_id,
@@ -229,7 +271,19 @@ def reconcile_associations(
                             "chrom": first.chrom,
                             "distance": str(second.pos - first.pos),
                         })
-            if not valid:
+            if conflicts:
+                # The molecule contradicts itself at an overlapping site:
+                # keep both candidates, endorse no combination, and never
+                # drop one endpoint or prefer one by import order.
+                status = MOLECULE_CONFLICT
+                for key in sorted(conflicts):
+                    first, second = conflicts[key]
+                    issues.append(_conflict_issue(first, second, endpoint_ids))
+                excluded_combinations = [
+                    {**combo, "reason": MOLECULE_CONFLICT} for combo in valid
+                ]
+                valid = []
+            elif not valid:
                 status = RELATION_INCONSISTENT
                 issues.append({
                     "code": RELATION_INCONSISTENT,
@@ -263,7 +317,7 @@ def reconcile_associations(
             relation.relation_version, status, endpoint_ids, present, missing,
             duplicate_fragment_ids, single, linked,
             sorted(set(union) - set(linked)), valid_combinations, issues,
-            1 if present else 0))
+            1 if present else 0, excluded_combinations))
     return results
 
 

@@ -3,6 +3,7 @@ import json
 from variant_pipeline.association import (
     AssociationRelation,
     MATCH_INSUFFICIENT,
+    MOLECULE_CONFLICT,
     PENDING,
     RELATION_INCONSISTENT,
     RESOLVED,
@@ -67,7 +68,7 @@ def test_same_qname_different_source_is_relation_inconsistent_not_auto_paired():
 def test_orientation_distance_contradiction_distinguishes_basis_from_no_match():
     fragments = [
         _fragment("a", "s1", [(4, "A")], strand="F"),
-        _fragment("b", "s1", [(4, "G")], strand="F"),
+        _fragment("b", "s1", [(8, "A")], strand="F"),
     ]
     relation = _relation("s1::a", "s1::b", orientation="opposite")
     result = reconcile_associations(fragments, [relation])[0]
@@ -80,10 +81,32 @@ def test_orientation_distance_contradiction_distinguishes_basis_from_no_match():
     assert result.status == MATCH_INSUFFICIENT
 
 
+def test_association_resolves_non_overlapping_compatible_candidates():
+    fragments = [
+        _fragment("a", "s1", [(4, "A")], strand="F"),
+        _fragment("b", "s1", [(8, "A")], strand="R"),
+    ]
+    relation = _relation(
+        "s1::a", "s1::b", orientation="opposite", min_distance=4, max_distance=4)
+    result = call_variants(fragments, {"c": REF}, PARAMS, [relation])
+    by_id = {c.variant_id: c for c in result.candidates}
+    assert by_id["c:g.4T>A"].alt_fragments == 1
+    assert by_id["c:g.4T>A"].alt_fragment_ids == ["unit-1"]
+    assert by_id["c:g.8T>A"].alt_fragments == 1
+    assert by_id["c:g.8T>A"].independent_alt_fragments == 1
+    unit = result.evidence_units[0]
+    assert unit["status"] == RESOLVED
+    assert unit["valid_combinations"] == [
+        {"s1::a": "c:g.4T>A", "s1::b": "c:g.8T>A", "chrom": "c", "distance": "4"}]
+    assert unit["linked_candidates"] == ["c:g.4T>A", "c:g.8T>A"]
+    assert unit["excluded_candidates"] == []
+    assert unit["excluded_combinations"] == []
+
+
 def test_association_excludes_single_fragment_candidate_and_counts_one_unit():
     fragments = [
         _fragment("a", "s1", [(4, "A"), (8, "A")], strand="F"),
-        _fragment("b", "s1", [(4, "G"), (8, "A")], strand="R"),
+        _fragment("b", "s1", [(5, "G"), (8, "A")], strand="R"),
     ]
     relation = _relation(
         "s1::a", "s1::b", orientation="opposite", min_distance=4, max_distance=4)
@@ -93,14 +116,109 @@ def test_association_excludes_single_fragment_candidate_and_counts_one_unit():
     assert by_id["c:g.8T>A"].alt_fragments == 1
     assert by_id["c:g.8T>A"].independent_alt_fragments == 1
     assert by_id["c:g.8T>A"].alt_fragment_ids == ["unit-1"]
-    assert by_id["c:g.4T>G"].alt_fragments == 0
-    assert by_id["c:g.4T>G"].alt_fragments == 0
+    assert by_id["c:g.5A>G"].alt_fragments == 0
     unit = result.evidence_units[0]
     assert unit["status"] == RESOLVED
     assert unit["single_fragment_candidates"]["s1::a"] == [
         "c:g.4T>A", "c:g.8T>A"]
     assert unit["linked_candidates"] == ["c:g.4T>A", "c:g.8T>A"]
-    assert unit["excluded_candidates"] == ["c:g.4T>G"]
+    assert unit["excluded_candidates"] == ["c:g.5A>G"]
+
+
+def test_same_site_substitution_conflict_keeps_both_candidates():
+    fragments = [
+        _fragment("a", "s1", [(4, "A"), (8, "A")], strand="F"),
+        _fragment("b", "s1", [(4, "G"), (8, "A")], strand="R"),
+    ]
+    relation = _relation(
+        "s1::a", "s1::b", orientation="opposite", min_distance=4, max_distance=4)
+    result = call_variants(fragments, {"c": REF}, PARAMS, [relation])
+    unit = result.evidence_units[0]
+    assert unit["status"] == MOLECULE_CONFLICT
+    # Both alleles are retained; nothing is excluded or endorsed.
+    assert unit["linked_candidates"] == ["c:g.4T>A", "c:g.4T>G", "c:g.8T>A"]
+    assert unit["excluded_candidates"] == []
+    assert unit["valid_combinations"] == []
+    assert unit["excluded_combinations"] == [
+        {"s1::a": "c:g.4T>A", "s1::b": "c:g.8T>A", "chrom": "c",
+         "distance": "4", "reason": MOLECULE_CONFLICT}]
+    conflict = [i for i in unit["issues"] if i["code"] == MOLECULE_CONFLICT]
+    assert len(conflict) == 1
+    assert conflict[0]["site"] == "c:4-4"
+    assert conflict[0]["variants"] == "c:g.4T>A,c:g.4T>G"
+    assert conflict[0]["fragment_id"] == "s1::a,s1::b"
+    assert unit["independent_evidence_units"] == 1
+    # One molecule, one vote: the shared compatible candidate gets a single
+    # unit vote; the contradictory site supports neither allele cleanly.
+    by_id = {c.variant_id: c for c in result.candidates}
+    assert by_id["c:g.8T>A"].alt_fragments == 1
+    assert by_id["c:g.8T>A"].alt_fragment_ids == ["unit-1"]
+    assert by_id["c:g.4T>A"].alt_fragments == 0
+    assert by_id["c:g.4T>A"].other_alt_fragments == 1
+    assert by_id["c:g.4T>G"].alt_fragments == 0
+    assert by_id["c:g.4T>G"].other_alt_fragments == 1
+
+
+def test_overlapping_indel_conflict_is_reported_without_dropping_an_end():
+    deletion = normalize("c", 4, "TA", "T", REF)
+    frag_a = Fragment(qname="a", strand="F", source_id="s1",
+                      source_name="s1", batch_id="s1")
+    frag_a.alt[deletion.canonical_key] = Observation(
+        variant=deletion, base_quals=(40,), strand="F", low_quality=False)
+    frag_a.covered.append((4, 5))
+    frag_b = _fragment("b", "s1", [(5, "G")], strand="R")
+    relation = _relation("s1::a", "s1::b", orientation="opposite",
+                         min_distance=0, max_distance=10)
+    result = reconcile_associations([frag_a, frag_b], [relation])[0]
+    assert result.status == MOLECULE_CONFLICT
+    assert result.linked_candidates == sorted(
+        {deletion.vid, "c:g.5A>G"})
+    assert result.excluded_candidates == []
+    conflict = [i for i in result.issues if i["code"] == MOLECULE_CONFLICT]
+    assert len(conflict) == 1
+    assert conflict[0]["site"] == "c:5-5"
+
+
+def test_conflict_basis_is_identical_when_endpoints_are_swapped():
+    fragments = [
+        _fragment("a", "s1", [(4, "A")], strand="F"),
+        _fragment("b", "s1", [(4, "G")], strand="R"),
+    ]
+    forward = _relation("s1::a", "s1::b", orientation="opposite")
+    swapped = AssociationRelation(
+        "unit-1", "mol-1", "s1::b", "s1::a", "s1", "s1",
+        orientation="opposite")
+    first = reconcile_associations(fragments, [forward])[0]
+    second = reconcile_associations(fragments, [swapped])[0]
+    assert first.status == MOLECULE_CONFLICT
+    assert second.status == MOLECULE_CONFLICT
+    assert first.issues == second.issues
+    assert first.linked_candidates == second.linked_candidates
+
+
+def test_withdrawn_conflict_association_restores_single_fragment_votes():
+    fragments = [
+        _fragment("a", "s1", [(4, "A")], strand="F"),
+        _fragment("b", "s1", [(4, "G")], strand="R"),
+    ]
+    relation = _relation("s1::a", "s1::b", orientation="opposite",
+                         status="withdrawn")
+    result = call_variants(fragments, {"c": REF}, PARAMS, [relation])
+    by_id = {c.variant_id: c for c in result.candidates}
+    assert by_id["c:g.4T>A"].alt_fragments == 1
+    assert by_id["c:g.4T>G"].alt_fragments == 1
+    assert result.evidence_units[0]["status"] == "withdrawn"
+
+
+def test_pending_late_endpoint_still_counts_as_one_molecule():
+    first = _fragment("end-a", "s1", [(4, "A")])
+    relation = _relation("s1::end-a", "s1::end-b")
+    result = call_variants([first], {"c": REF}, PARAMS, [relation])
+    unit = result.evidence_units[0]
+    assert unit["status"] == PENDING
+    assert unit["independent_evidence_units"] == 1
+    by_id = {c.variant_id: c for c in result.candidates}
+    assert by_id["c:g.4T>A"].alt_fragments == 1
 
 
 def test_withdrawn_association_restores_original_single_fragment_ambiguity():

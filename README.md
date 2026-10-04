@@ -38,7 +38,7 @@
 ## 版本与历史批次
 
 分析规则版本记录在包常量 `variant_pipeline.ANALYSIS_VERSION`
-（当前 `linked-evidence-units-v4`，包版本 `0.5.0`）。
+（当前 `linked-evidence-units-v5`，包版本 `0.6.0`）。
 
 `--outdir` 是**版本化结果库**的根目录：每次 `call` 都把结果发布为一个
 新的不可变版本目录 `outdir/runs/vNNNN/`（含 `manifest.json`），绝不覆盖
@@ -122,6 +122,11 @@ QNAME，也不会被误认为同一份片段；同一批片段中途保存后重
 - 被组合关系排除的候选（`excluded_candidates`）；
 - 一端迟到（`pending_endpoint`）、片段匹配不足（`match_insufficient`）和
   关联依据矛盾（`relation_inconsistent`），不会静默丢弃任一端；
+- 同一分子两端在同位点（或重叠插入/缺失区间）支持不同等位时，标记
+  `molecule_conflict`：双方候选全部保留在 `linked_candidates`，不删除任一端、
+  不按导入顺序选答案；`valid_combinations` 为空，被搁置的组合连同冲突依据
+  （位点、等位对、端片段，与端点顺序无关）记录在 `excluded_combinations` 与
+  `issues` 中；该分子在计票时仍只算一个证据单元；
 - 重复导入、多个拆分片段和部分缺失均归入同一个可说明证据单元。
 
 一个证据单元可以支持多个不同位置的候选，但对任一候选最多形成一份独立支持，

@@ -172,6 +172,12 @@ def render_text_report(payload: dict) -> str:
             )
             if unit["excluded_candidates"]:
                 lines.append("    关联排除: " + ", ".join(unit["excluded_candidates"]))
+            for combo in unit.get("excluded_combinations", []):
+                pair = ", ".join(
+                    f"{key}={value}" for key, value in combo.items()
+                    if key not in ("chrom", "distance", "reason"))
+                lines.append(
+                    f"    排除组合 ({combo.get('reason', '')}): {pair}")
             for issue in unit.get("issues", []):
                 lines.append(f"    [{issue['code']}] {issue['message']}")
     lines.append("")

@@ -121,11 +121,14 @@ def call_variants(
     candidate_results: list[CandidateEvidence] = []
     resolved_units = []
     if association_relations:
-        from .association import reconcile_associations, RESOLVED
+        from .association import MOLECULE_CONFLICT, RESOLVED, reconcile_associations
         resolved_units = [
             unit.to_dict()
             for unit in reconcile_associations(fragments, association_relations)
-            if unit.status == RESOLVED
+            # Conflicted molecules still count as one molecule: both
+            # candidates stay visible, but the unit never votes twice and
+            # nothing is excluded by import order.
+            if unit.status in (RESOLVED, MOLECULE_CONFLICT)
         ]
 
     def association_context(fragment_id: str, variant_id: str):

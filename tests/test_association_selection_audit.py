@@ -37,7 +37,7 @@ def test_selection_history_and_export_trace_to_molecule(tmp_path):
     store = RunStore(tmp_path / "store")
     fragments = [
         _fragment("a", "s1", [(4, "A"), (8, "A")], "F"),
-        _fragment("b", "s1", [(4, "G"), (8, "A")], "R"),
+        _fragment("b", "s1", [(5, "G"), (8, "A")], "R"),
     ]
     relation = AssociationRelation(
         "unit-1", "mol-1", "s1::a", "s1::b", "s1", "s1",
@@ -70,7 +70,7 @@ def test_selection_history_and_export_trace_to_molecule(tmp_path):
     first_decision = load_selection(store, info.version)
     view = selected_view(store.verify(info.version), "c:g.8T>A", first_decision)
     view_by_id = {c["variant_id"]: c for c in view["candidates"]}
-    assert view_by_id["c:g.4T>G"]["selection_state"] == "excluded_by_provisional_choice"
+    assert view_by_id["c:g.5A>G"]["selection_state"] == "excluded_by_provisional_choice"
     assert view_by_id["c:g.8T>A"]["supporting_evidence"]["alt_fragments"] == 1
     save_selection(store, info.version, "c:g.4T>A", "unit-1", "rule-2", "second")
     decision = load_selection(store, info.version)
@@ -78,7 +78,7 @@ def test_selection_history_and_export_trace_to_molecule(tmp_path):
     assert decision["supersedes"] is not None
     assert len(decision["history"]) == 1
     assert decision["history"][0]["selected_variant_id"] == "c:g.8T>A"
-    assert decision["excluded_variant_ids"] == ["c:g.4T>G"]
+    assert decision["excluded_variant_ids"] == ["c:g.5A>G"]
     withdraw_selection(store, info.version)
     assert load_selection(store, info.version) is None
 
