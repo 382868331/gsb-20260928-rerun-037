@@ -66,19 +66,38 @@ def test_selection_history_and_export_trace_to_molecule(tmp_path):
         config_dict=cfg.to_dict(), reads_path=reads,
         fasta_path=tmp_path / "ref.fasta", fingerprint=fp)
 
-    save_selection(store, info.version, "c:g.8T>A", "unit-1", "rule-1", "first")
+    # First choice picks the linked, compatible c:g.8T>A allele.
+    save_selection(store, info.version, "c:g.4T>A", "unit-1", "rule-1", "first")
     first_decision = load_selection(store, info.version)
-    view = selected_view(store.verify(info.version), "c:g.8T>A", first_decision)
+    assert first_decision["excluded_variant_ids"] == ["c:g.8T>A"]
+    assert first_decision["conflicting_variant_ids"] == [
+        "c:g.4T>A", "c:g.4T>G"]
+    view = selected_view(store.verify(info.version), "c:g.4T>A", first_decision)
     view_by_id = {c["variant_id"]: c for c in view["candidates"]}
-    assert view_by_id["c:g.4T>G"]["selection_state"] == "excluded_by_provisional_choice"
-    assert view_by_id["c:g.8T>A"]["supporting_evidence"]["alt_fragments"] == 1
-    save_selection(store, info.version, "c:g.4T>A", "unit-1", "rule-2", "second")
+    # The other same-site allele is an intra-molecule conflict, never silently
+    # dropped or marked as excluded by import order; distance-excluded 8T>A
+    # is marked under the provisional relation choice.
+    assert view_by_id["c:g.4T>G"]["selection_state"] == "intra_molecule_conflict"
+    assert view_by_id["c:g.8T>A"]["selection_state"] == "excluded_by_provisional_choice"
+    assert view_by_id["c:g.4T>A"]["supporting_evidence"]["alt_fragments"] == 0
+    # Swap the provisional choice to the other end's allele: conflict basis,
+    # excluded combinations and support counts stay identical and consistent.
+    save_selection(store, info.version, "c:g.4T>G", "unit-1", "rule-2", "second")
     decision = load_selection(store, info.version)
-    assert decision["selected_variant_id"] == "c:g.4T>A"
+    assert decision["selected_variant_id"] == "c:g.4T>G"
     assert decision["supersedes"] is not None
     assert len(decision["history"]) == 1
-    assert decision["history"][0]["selected_variant_id"] == "c:g.8T>A"
-    assert decision["excluded_variant_ids"] == ["c:g.4T>G"]
+    assert decision["history"][0]["selected_variant_id"] == "c:g.4T>A"
+    assert decision["excluded_variant_ids"] == ["c:g.8T>A"]
+    assert decision["conflicting_variant_ids"] == [
+        "c:g.4T>A", "c:g.4T>G"]
+    conflict = decision["conflicting_combinations"][0]
+    assert conflict["a_variant_id"] == "c:g.4T>A"
+    assert conflict["b_variant_id"] == "c:g.4T>G"
+    view2 = selected_view(store.verify(info.version), "c:g.4T>G", decision)
+    view2_by_id = {c["variant_id"]: c for c in view2["candidates"]}
+    assert view2_by_id["c:g.4T>A"]["selection_state"] == "intra_molecule_conflict"
+    assert view2_by_id["c:g.4T>G"]["supporting_evidence"]["alt_fragments"] == 0
     withdraw_selection(store, info.version)
     assert load_selection(store, info.version) is None
 

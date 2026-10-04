@@ -170,8 +170,24 @@ def render_text_report(payload: dict) -> str:
                 "    关联后成立: "
                 + (", ".join(unit["linked_candidates"]) if unit["linked_candidates"] else "无")
             )
+            if unit.get("conflicting_candidates"):
+                lines.append(
+                    "    分子内部冲突 (双方候选均保留, 该位点弃权): "
+                    + ", ".join(unit["conflicting_candidates"]))
+                for combo in unit.get("conflicting_combinations", []):
+                    lines.append(
+                        f"      冲突依据: {combo['a_variant_id']} 与 "
+                        f"{combo['b_variant_id']} 重叠于 "
+                        f"{combo['chrom']}:{combo['pos']}-{combo['end']} "
+                        f"({combo['code']})")
             if unit["excluded_candidates"]:
                 lines.append("    关联排除: " + ", ".join(unit["excluded_candidates"]))
+            if unit.get("excluded_combinations"):
+                lines.append("    排除组合:")
+                for combo in unit["excluded_combinations"]:
+                    lines.append(
+                        f"      {list(combo.values())[0]} + {list(combo.values())[1]} "
+                        f"({combo.get('chrom', '?')}, distance={combo.get('distance', '?')})")
             for issue in unit.get("issues", []):
                 lines.append(f"    [{issue['code']}] {issue['message']}")
     lines.append("")

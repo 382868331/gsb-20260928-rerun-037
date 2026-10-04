@@ -11,7 +11,7 @@ __version__ = "0.5.0"
 # Analysis rule version. Bumped when evidence semantics change; outputs
 # produced under previous rule versions remain valid historical batches and
 # are never rewritten in place.
-ANALYSIS_VERSION = "linked-evidence-units-v4"
+ANALYSIS_VERSION = "linked-evidence-units-v5"
 
 RESEARCH_DISCLAIMER = (
     "Research use only. Output is an unvalidated candidate summary for "

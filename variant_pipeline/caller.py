@@ -121,17 +121,23 @@ def call_variants(
     candidate_results: list[CandidateEvidence] = []
     resolved_units = []
     if association_relations:
-        from .association import reconcile_associations, RESOLVED
+        from .association import (
+            MOLECULE_CONFLICT,
+            RESOLVED,
+            reconcile_associations,
+        )
         resolved_units = [
             unit.to_dict()
             for unit in reconcile_associations(fragments, association_relations)
-            if unit.status == RESOLVED
+            if unit.status in (RESOLVED, MOLECULE_CONFLICT)
         ]
 
     def association_context(fragment_id: str, variant_id: str):
         for unit in resolved_units:
             if fragment_id not in unit["fragment_ids"]:
                 continue
+            if variant_id in unit.get("conflicting_candidates", []):
+                return "conflict", unit["association_id"]
             if variant_id in unit.get("excluded_candidates", []):
                 return "excluded", None
             if variant_id in unit.get("linked_candidates", []):
@@ -179,7 +185,9 @@ def call_variants(
             association_state, unit_id = association_context(
                 frag.evidence_id, variant.vid)
             support_key = unit_id or frag.evidence_id
-            if association_state == "excluded":
+            if association_state == "conflict":
+                state = "conflict"
+            elif association_state == "excluded":
                 state = "other_alt"
             else:
                 state = _fragment_state(frag, key, anchor)
@@ -194,19 +202,26 @@ def call_variants(
             if state == "uninformative":
                 continue
             entry = states_by_unit.setdefault(support_key, {
-                "state": state, "fragment": frag, "unit_id": unit_id})
-            rank = {
-                "conflict": 4, "other_alt": 3, "alt_low": 2,
-                "alt_pass": 1, "ref": 0,
-            }
-            if rank[state] > rank[entry["state"]]:
-                entry.update(state=state, fragment=frag, unit_id=unit_id)
+                "state": state, "fragment": frag, "unit_id": unit_id,
+                "has_alt": False})
+            # Merge endpoint states within one molecule:
+            # - conflict (same-site contradictory alleles) is decisive and
+            #   forces the molecule to abstain at this site;
+            # - any endpoint with ALT at this compatible site means the
+            #   molecule supports it once, regardless of other-site conflicts.
+            if entry["state"] != "conflict":
+                if state in ("alt_pass", "alt_low"):
+                    entry.update(state=state, fragment=frag, unit_id=unit_id,
+                                 has_alt=True)
+                elif not entry["has_alt"]:
+                    rank = {"other_alt": 3, "alt_low": 2, "alt_pass": 1, "ref": 0}
+                    if rank[state] > rank[entry["state"]]:
+                        entry.update(state=state, fragment=frag, unit_id=unit_id)
 
         passing_depth = len(states_by_unit)
         for support_key, entry in states_by_unit.items():
-            state = entry["state"]
-            frag = entry["fragment"]
-            unit_id = entry["unit_id"]
+            state, frag, unit_id = (
+                entry["state"], entry["fragment"], entry["unit_id"])
             if state in ("alt_pass", "alt_low"):
                 fragment_ids.append(support_key)
             if state == "alt_pass":

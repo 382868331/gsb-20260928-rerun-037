@@ -19,6 +19,9 @@ MATCH_INSUFFICIENT = "match_insufficient"
 RELATION_INCONSISTENT = "relation_inconsistent"
 RESOLVED = "resolved"
 REVISED = "revised"
+MOLECULE_CONFLICT = "molecule_conflict"
+
+INTRA_MOLECULE_CONFLICT = "intra_molecule_conflict"
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,9 @@ class EvidenceUnitResult:
     linked_candidates: list[str]
     excluded_candidates: list[str]
     valid_combinations: list[dict[str, str]]
+    conflicting_candidates: list[str] = field(default_factory=list)
+    conflicting_combinations: list[dict[str, Any]] = field(default_factory=list)
+    excluded_combinations: list[dict[str, str]] = field(default_factory=list)
     issues: list[dict[str, str]] = field(default_factory=list)
     independent_evidence_units: int = 0
 
@@ -144,6 +150,16 @@ def _distance_ok(first: CandidatePlacement, second: CandidatePlacement,
     return True
 
 
+def _placements_overlap(first: CandidatePlacement,
+                        second: CandidatePlacement) -> bool:
+    """Whether two allele events claim the same reference interval."""
+    return (
+        first.chrom == second.chrom
+        and first.pos <= second.end
+        and second.pos <= first.end
+    )
+
+
 def reconcile_associations(
     fragments: Iterable[Any],
     relations: Iterable[AssociationRelation],
@@ -161,6 +177,10 @@ def reconcile_associations(
             for fid in present
         }
         issues: list[dict[str, str]] = []
+        valid: list[dict[str, str]] = []
+        relation_excluded: list[dict[str, str]] = []
+        conflicting_combinations: list[dict[str, Any]] = []
+        conflicting_variant_ids: set[str] = set()
 
         if relation.status == "withdrawn":
             results.append(EvidenceUnitResult(
@@ -168,10 +188,11 @@ def reconcile_associations(
                 relation.relation_version, "withdrawn", endpoint_ids, present,
                 missing, duplicate_fragment_ids, single,
                 sorted(set().union(*single.values()) if single else []), [], [],
-                [{
+                issues=[{
                     "code": "association_withdrawn", "fragment_id": "",
                     "message": "relation withdrawn; original ambiguity is restored",
-                }], 1 if present else 0))
+                }],
+                independent_evidence_units=1 if present else 0))
             continue
         if relation.status == "revised":
             results.append(EvidenceUnitResult(
@@ -179,10 +200,11 @@ def reconcile_associations(
                 relation.relation_version, REVISED, endpoint_ids, present,
                 missing, duplicate_fragment_ids, single,
                 sorted(set().union(*single.values()) if single else []), [], [],
-                [{
+                issues=[{
                     "code": "association_revised", "fragment_id": "",
                     "message": "old relation revised; original ambiguity is retained",
-                }], 1 if present else 0))
+                }],
+                independent_evidence_units=1 if present else 0))
             continue
 
         expected_sources = {relation.a: relation.source_id_a, relation.b: relation.source_id_b}
@@ -218,18 +240,52 @@ def reconcile_associations(
         else:
             placements_a = fragment_placements(fragment_index[relation.a])
             placements_b = fragment_placements(fragment_index[relation.b])
-            valid = []
+            all_pairs: list[tuple[CandidatePlacement, CandidatePlacement,
+                                  dict[str, str]]] = []
             for first in placements_a:
                 for second in placements_b:
-                    if (_orientation_ok(first, second, relation.orientation)
-                            and _distance_ok(first, second, relation)):
-                        valid.append({
-                            relation.a: first.variant_id,
-                            relation.b: second.variant_id,
+                    pair = {
+                        relation.a: first.variant_id,
+                        relation.b: second.variant_id,
+                        "chrom": first.chrom,
+                        "distance": str(second.pos - first.pos),
+                    }
+                    # Physical allele disagreement inside one molecule cannot
+                    # be resolved by the relation: both alleles stay on record
+                    # and the conflicting pair is retained as audit evidence.
+                    if (_placements_overlap(first, second)
+                            and first.variant_id != second.variant_id):
+                        conflicting_variant_ids.add(first.variant_id)
+                        conflicting_variant_ids.add(second.variant_id)
+                        conflict_entry = {
+                            "code": INTRA_MOLECULE_CONFLICT,
+                            "a_variant_id": first.variant_id,
+                            "b_variant_id": second.variant_id,
                             "chrom": first.chrom,
-                            "distance": str(second.pos - first.pos),
-                        })
-            if not valid:
+                            "pos": max(first.pos, second.pos),
+                            "end": min(first.end, second.end),
+                            "fragment_id": "",
+                            "message": (
+                                "endpoints assert different alleles over the "
+                                "same reference interval in one molecule; "
+                                "neither allele is dropped or auto-selected"),
+                        }
+                        conflicting_combinations.append(conflict_entry)
+                    else:
+                        all_pairs.append((first, second, pair))
+            # An allele contradicted at its own site cannot be carried into a
+            # joint interpretation via the other endpoint's placements: only
+            # combinations free of conflicting alleles are retested.
+            for first, second, pair in all_pairs:
+                if (first.variant_id in conflicting_variant_ids
+                        or second.variant_id in conflicting_variant_ids):
+                    continue
+                if (_orientation_ok(first, second, relation.orientation)
+                        and _distance_ok(first, second, relation)):
+                    valid.append(pair)
+                else:
+                    relation_excluded.append(pair)
+            if not valid and not conflicting_variant_ids:
                 status = RELATION_INCONSISTENT
                 issues.append({
                     "code": RELATION_INCONSISTENT,
@@ -238,18 +294,38 @@ def reconcile_associations(
                 })
             else:
                 status = RESOLVED
+            if conflicting_combinations:
+                status = MOLECULE_CONFLICT
+                issues.append({
+                    "code": INTRA_MOLECULE_CONFLICT,
+                    "fragment_id": "",
+                    "message": (
+                        "intra-molecule allele conflict at an overlapping "
+                        "site; both candidate alleles are retained and "
+                        "abstain at that site; the molecule still counts once"),
+                })
 
         union = sorted(set().union(*single.values()) if single else [])
-        if status == RESOLVED:
+        if status in (RESOLVED, MOLECULE_CONFLICT):
             linked = sorted({
                 candidate
                 for combo in valid
                 for candidate in (combo[relation.a], combo[relation.b])
             })
             valid_combinations = valid
+            relation_excluded_sorted = sorted(
+                relation_excluded,
+                key=lambda combo: (
+                    str(combo.get(relation.a, "")),
+                    str(combo.get(relation.b, "")),
+                    str(combo.get("chrom", "")),
+                    str(combo.get("distance", ""))))
         else:
             linked = union
             valid_combinations = []
+            relation_excluded_sorted = []
+
+        conflicting_candidates = sorted(conflicting_variant_ids) if single else []
 
         if duplicate_fragment_ids:
             issues.append({
@@ -259,11 +335,26 @@ def reconcile_associations(
             })
 
         results.append(EvidenceUnitResult(
-            relation.association_id, relation.molecule_id, relation.relation_id,
-            relation.relation_version, status, endpoint_ids, present, missing,
-            duplicate_fragment_ids, single, linked,
-            sorted(set(union) - set(linked)), valid_combinations, issues,
-            1 if present else 0))
+            association_id=relation.association_id,
+            molecule_id=relation.molecule_id,
+            relation_id=relation.relation_id,
+            relation_version=relation.relation_version,
+            status=status,
+            fragment_ids=endpoint_ids,
+            present_fragment_ids=present,
+            missing_fragment_ids=missing,
+            duplicate_fragment_ids=duplicate_fragment_ids,
+            single_fragment_candidates=single,
+            linked_candidates=linked,
+            excluded_candidates=sorted(
+                set(union) - set(linked) - set(conflicting_candidates)),
+            valid_combinations=valid_combinations,
+            conflicting_candidates=conflicting_candidates,
+            conflicting_combinations=(
+                conflicting_combinations if single else []),
+            excluded_combinations=relation_excluded_sorted,
+            issues=issues,
+            independent_evidence_units=1 if present else 0))
     return results
 
 

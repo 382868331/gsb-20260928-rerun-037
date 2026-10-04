@@ -38,7 +38,7 @@
 ## 版本与历史批次
 
 分析规则版本记录在包常量 `variant_pipeline.ANALYSIS_VERSION`
-（当前 `linked-evidence-units-v4`，包版本 `0.5.0`）。
+（当前 `linked-evidence-units-v5`，包版本 `0.5.0`）。
 
 `--outdir` 是**版本化结果库**的根目录：每次 `call` 都把结果发布为一个
 新的不可变版本目录 `outdir/runs/vNNNN/`（含 `manifest.json`），绝不覆盖
@@ -122,15 +122,28 @@ QNAME，也不会被误认为同一份片段；同一批片段中途保存后重
 - 被组合关系排除的候选（`excluded_candidates`）；
 - 一端迟到（`pending_endpoint`）、片段匹配不足（`match_insufficient`）和
   关联依据矛盾（`relation_inconsistent`），不会静默丢弃任一端；
+- **分子内部等位冲突（`molecule_conflict`）**：同一原分子的两端在同一位点
+  （参考区间重叠）给出**不同等位**时，如一端 T>A、另一端 T>G，或重叠的插入与
+  删除，双方候选**都保留**，单元标记为 `molecule_conflict` 而不是 `resolved`：
+  不删除任一端、不按导入顺序选答案，该位点由该分子弃权一次（双方候选各记一次
+  `conflicting_overlap_fragments`，均不计 ALT 支持），冲突依据保存在
+  `conflicting_combinations`（两端等位、重叠坐标），不满足方向/距离的组合保存在
+  `excluded_combinations`。不重叠、兼容的候选仍可正常成立；两端在同一位点给出
+  相同等位（纯合）不算冲突。
 - 重复导入、多个拆分片段和部分缺失均归入同一个可说明证据单元。
 
 一个证据单元可以支持多个不同位置的候选，但对任一候选最多形成一份独立支持，
-不会因为有多个拆分端而重复计票。撤回关系时，原单片段歧义恢复，而不是新增证据。
+不会因为有多个拆分端而重复计票；一端迟到时整个关系仍只算一个分子，迟到端到达
+后若与另一端冲突则按分子内部冲突处理。撤回关系时，原单片段歧义恢复（每个端
+重新成为独立片段），而不是新增证据。
 
 人工采用可指定证据单元和规则：`select --evidence-unit unit-0001
 --relation-id mate-rule-2026 --rationale ...`。再次选择会把旧选择完整放入
-`history`，不覆盖旧选择；撤回后导出仍保留采用记录，审计可从支持数量追到原分子、
-端片段、关系 ID/版本以及排除依据。
+`history`，不覆盖旧选择；在冲突单元上交换采用（先选一端等位、再改选另一端）
+时，冲突依据（`conflicting_combinations`）、被排除组合与支持计数保持一致，
+未被选中的冲突等位标记为 `intra_molecule_conflict`，不会被当作按导入顺序排除。
+撤回后导出仍保留采用记录，审计可从支持数量追到原分子、端片段、关系 ID/版本、
+冲突依据以及排除依据。
 
 ## 输出
 

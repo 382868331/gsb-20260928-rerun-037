@@ -14,6 +14,7 @@ SELECTIONS_DIRNAME = "selections"
 _HISTORY_FIELDS = (
     "selection_id", "selected_variant_id", "evidence_unit_id", "relation_id",
     "relation_version", "rationale", "excluded_variant_ids", "adopted_basis",
+    "conflicting_variant_ids", "conflicting_combinations",
     "created_at", "superseded_at",
 )
 
@@ -62,13 +63,17 @@ def save_selection(
                      if u.get("association_id") == evidence_unit_id), None)
         if unit is None:
             raise ValueError(f"unknown evidence unit in {version}: {evidence_unit_id}")
-        if selected_variant_id not in unit.get("linked_candidates", []):
+        unit_candidates = set(unit.get("linked_candidates", [])) | set(
+            unit.get("conflicting_candidates", []))
+        if selected_variant_id not in unit_candidates:
             raise ValueError(
-                f"selected variant {selected_variant_id} is not supported by "
-                f"linked evidence unit {evidence_unit_id}")
+                f"selected variant {selected_variant_id} is not observed by "
+                f"evidence unit {evidence_unit_id}")
 
     selected_group = None
     excluded: list[str] = []
+    conflicting: list[str] = []
+    conflict_basis: list[dict] = []
     adopted_basis = "ambiguity_group"
     if unit is not None:
         single = {
@@ -76,7 +81,12 @@ def save_selection(
             for values in unit.get("single_fragment_candidates", {}).values()
             for candidate in values
         }
-        excluded = sorted(single - set(unit.get("linked_candidates", [])))
+        conflicting = list(unit.get("conflicting_candidates", []))
+        conflict_basis = list(unit.get("conflicting_combinations", []))
+        excluded = sorted(
+            single
+            - set(unit.get("linked_candidates", []))
+            - set(conflicting))
         adopted_basis = "evidence_unit_relation"
     else:
         selected_group = next(
@@ -102,6 +112,8 @@ def save_selection(
         "relation_version": (unit or {}).get("relation_version"),
         "rationale": rationale,
         "excluded_variant_ids": excluded,
+        "conflicting_variant_ids": conflicting,
+        "conflicting_combinations": conflict_basis,
         "adopted_basis": adopted_basis,
         "supersedes": existing.get("selection_id") if existing else None,
         "history": history,
@@ -176,6 +188,11 @@ def selected_view(info: VersionInfo, selected_variant_id: str,
                 candidate["status_note"] = (
                     "selected linked evidence-unit interpretation; "
                     "the unit remains one independent evidence source")
+            elif variant_id in decision.get("conflicting_variant_ids", []):
+                candidate["selection_state"] = "intra_molecule_conflict"
+                candidate["status_note"] = (
+                    "retained allele contradicts the selected allele within "
+                    "the same molecule; not excluded by import order")
             elif variant_id in excluded_by_decision:
                 candidate["selection_state"] = "excluded_by_provisional_choice"
                 candidate["status_note"] = "excluded only under the recorded relation version"
@@ -218,6 +235,8 @@ def selected_view(info: VersionInfo, selected_variant_id: str,
         "ambiguity_group_id": selected_group["group_id"] if selected_group else None,
         "assigned_fragment_ids": sorted(assigned_ids),
         "excluded_variant_ids": sorted(excluded),
+        "conflicting_variant_ids": decision.get("conflicting_variant_ids", []),
+        "conflicting_combinations": decision.get("conflicting_combinations", []),
         "evidence_unit_id": decision.get("evidence_unit_id"),
         "relation_id": decision.get("relation_id"),
         "relation_version": decision.get("relation_version"),
