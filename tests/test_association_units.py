@@ -282,3 +282,85 @@ def test_revised_association_restores_original_single_fragment_ambiguity():
     assert by_id["c:g.4T>A"].alt_fragments == 1
     assert by_id["c:g.4T>G"].alt_fragments == 1
     assert result.evidence_units[0]["status"] == "revised"
+
+
+def test_same_display_name_different_sources_stay_distinct_and_order_stable():
+    fragments = [
+        _fragment("same", "s1", [(4, "A")], strand="F"),
+        _fragment("same", "s2", [(8, "A")], strand="R"),
+    ]
+    relation = _relation("same", "same", source_a="s1", source_b="s2",
+                         orientation="opposite", min_distance=4, max_distance=4)
+    forward = reconcile_associations(fragments, [relation])[0]
+    reverse = reconcile_associations(fragments[::-1], [relation])[0]
+    assert forward.status == RESOLVED
+    # Swapping import order must not change status, combinations or counts.
+    assert forward.to_dict() == reverse.to_dict()
+    assert forward.present_fragment_ids == ["s1::same", "s2::same"]
+    assert forward.duplicate_fragment_ids == []
+    assert forward.valid_combinations == [{
+        "s1::same": "c:g.4T>A", "s2::same": "c:g.8T>A",
+        "chrom": "c", "distance": "4"}]
+    assert forward.independent_evidence_units == 1
+
+    called = call_variants(fragments, {"c": REF}, PARAMS, [relation])
+    called_rev = call_variants(fragments[::-1], {"c": REF}, PARAMS, [relation])
+    assert called.evidence_units == called_rev.evidence_units
+    by_id = {c.variant_id: c for c in called.candidates}
+    by_id_rev = {c.variant_id: c for c in called_rev.candidates}
+    for vid in ("c:g.4T>A", "c:g.8T>A"):
+        assert by_id[vid].alt_fragments == 1
+        assert by_id[vid].depth == by_id_rev[vid].depth == 1
+
+
+def test_same_source_duplicate_import_is_collapsed_and_reported():
+    fragments = [
+        _fragment("dup", "s1", [(4, "A")]),
+        _fragment("dup", "s1", [(4, "A")]),
+    ]
+    relation = _relation("s1::dup", "s1::other")
+    forward = reconcile_associations(fragments, [relation])[0]
+    reverse = reconcile_associations(fragments[::-1], [relation])[0]
+    assert forward.to_dict() == reverse.to_dict()
+    assert forward.status == PENDING
+    assert forward.duplicate_fragment_ids == ["s1::dup"]
+    assert any(i["code"] == "duplicate_import" for i in forward.issues)
+
+
+def test_same_name_from_other_source_is_not_a_duplicate_import():
+    fragments = [
+        _fragment("dup", "s1", [(4, "A")]),
+        _fragment("dup", "s2", [(4, "A")]),
+    ]
+    relation = _relation("s1::dup", "s1::other")
+    result = reconcile_associations(fragments, [relation])[0]
+    assert result.duplicate_fragment_ids == []
+    assert not any(i["code"] == "duplicate_import" for i in result.issues)
+
+
+def test_missing_endpoint_diagnostic_identifies_the_expected_source():
+    first = _fragment("end-a", "s1", [(4, "A")])
+    relation = _relation("end-a", "end-b", source_a="s1", source_b="s2")
+    result = reconcile_associations([first], [relation])[0]
+    assert result.status == PENDING
+    assert result.present_fragment_ids == ["s1::end-a"]
+    assert result.missing_fragment_ids == ["s2::end-b"]
+    pending = next(i for i in result.issues if i["code"] == PENDING)
+    assert "s2::end-b" in pending["fragment_id"]
+
+
+def test_conflicting_endpoints_across_sources_are_order_stable():
+    fragments = [
+        _fragment("same", "s1", [(4, "A")], strand="F"),
+        _fragment("same", "s2", [(4, "G")], strand="R"),
+    ]
+    relation = _relation("same", "same", source_a="s1", source_b="s2",
+                         orientation="opposite")
+    forward = reconcile_associations(fragments, [relation])[0]
+    reverse = reconcile_associations(fragments[::-1], [relation])[0]
+    assert forward.status == MOLECULE_CONFLICT
+    assert forward.to_dict() == reverse.to_dict()
+    assert forward.conflicting_candidates == ["c:g.4T>A", "c:g.4T>G"]
+    assert forward.conflicting_combinations[0]["a_variant_id"] == "c:g.4T>A"
+    assert forward.conflicting_combinations[0]["b_variant_id"] == "c:g.4T>G"
+    assert forward.independent_evidence_units == 1
