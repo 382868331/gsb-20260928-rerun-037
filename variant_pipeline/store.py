@@ -80,7 +80,8 @@ class RunStore:
     def fingerprint(self, *, config_dict: dict, reads_path: str,
                     fasta_path: str,
                     extra_read_paths: list[str] | tuple[str, ...] = (),
-                    associations_path: str | None = None) -> str:
+                    associations_path: str | None = None,
+                    combination_constraints_path: str | None = None) -> str:
         """Stable identity of one analysis request.
 
         Binds the exact inputs (reads + reference bytes), the full run
@@ -102,6 +103,10 @@ class RunStore:
                     sha256_file(associations_path)
                     if associations_path else None
                 ),
+                "combination_constraints_sha256": (
+                    sha256_file(combination_constraints_path)
+                    if combination_constraints_path else None
+                ),
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -118,7 +123,8 @@ class RunStore:
                 config_dict: dict, reads_path: str, fasta_path: str,
                 fingerprint: str,
                 extra_read_paths: list[str] | tuple[str, ...] = (),
-                associations_path: str | None = None) -> VersionInfo:
+                associations_path: str | None = None,
+                combination_constraints_path: str | None = None) -> VersionInfo:
         """Publish a new version atomically; never touches old versions.
 
         ``outputs`` maps output filenames to the staged file paths to
@@ -163,6 +169,13 @@ class RunStore:
                     "associations_sha256": (
                         sha256_file(associations_path)
                         if associations_path else None
+                    ),
+                    "combination_constraints_path": (
+                        str(combination_constraints_path)
+                        if combination_constraints_path else None),
+                    "combination_constraints_sha256": (
+                        sha256_file(combination_constraints_path)
+                        if combination_constraints_path else None
                     ),
                 },
                 "outputs": output_hashes,

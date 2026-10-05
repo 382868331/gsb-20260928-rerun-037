@@ -46,6 +46,7 @@ class RunConfig:
     parameters: Parameters = field(default_factory=Parameters)
     reads_path: str | None = None
     associations_path: str | None = None
+    combination_constraints_path: str | None = None
 
     @staticmethod
     def from_dict(data: dict) -> "RunConfig":
@@ -64,6 +65,8 @@ class RunConfig:
             parameters=params,
             reads_path=data.get("reads_path"),
             associations_path=data.get("associations_path"),
+            combination_constraints_path=data.get(
+                "combination_constraints_path"),
         )
 
     @staticmethod
@@ -100,6 +103,11 @@ def _resolve_paths(cfg: RunConfig, base_dir: Path) -> RunConfig:
         ap = Path(associations_path)
         if not ap.is_absolute():
             associations_path = str((base_dir / ap).resolve())
+    combination_constraints_path = cfg.combination_constraints_path
+    if combination_constraints_path is not None:
+        cp = Path(combination_constraints_path)
+        if not cp.is_absolute():
+            combination_constraints_path = str((base_dir / cp).resolve())
     reference = ReferenceConfig(
         fasta_path=str(ref_path.resolve()),
         name=cfg.reference.name,
@@ -112,4 +120,5 @@ def _resolve_paths(cfg: RunConfig, base_dir: Path) -> RunConfig:
         parameters=cfg.parameters,
         reads_path=reads_path,
         associations_path=associations_path,
+        combination_constraints_path=combination_constraints_path,
     )

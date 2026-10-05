@@ -1,0 +1,14 @@
+{
+  "combination_constraints": [
+    {
+      "constraint_id": "must-link-example",
+      "kind": "required",
+      "relations": ["unit-0001", "unit-0002"]
+    },
+    {
+      "constraint_id": "either-or-example",
+      "kind": "forbidden",
+      "relations": ["unit-0001", "unit-0003"]
+    }
+  ]
+}

@@ -38,7 +38,7 @@
 ## 版本与历史批次
 
 分析规则版本记录在包常量 `variant_pipeline.ANALYSIS_VERSION`
-（当前 `linked-evidence-units-v5`，包版本 `0.5.0`）。
+（当前 `multi-source-combination-search-v6`，包版本 `0.6.0`）。
 
 `--outdir` 是**版本化结果库**的根目录：每次 `call` 都把结果发布为一个
 新的不可变版本目录 `outdir/runs/vNNNN/`（含 `manifest.json`），绝不覆盖
@@ -148,6 +148,60 @@ QNAME，也不会被误认为同一份片段；同一批片段中途保存后重
 未被选中的冲突等位标记为 `intra_molecule_conflict`，不会被当作按导入顺序排除。
 撤回后导出仍保留采用记录，审计可从支持数量追到原分子、端片段、关系 ID/版本、
 冲突依据以及排除依据。
+
+## 多来源关系的兼容组合搜索
+
+在单条关系证据单元之上，研究者还可以声明跨多条关系的**组合约束**（独立 JSON，
+用 `call --combination-constraints constraints.json` 或配置项
+`combination_constraints_path` 指定；也可以直接内嵌在关联文件的
+`combination_constraints` 数组里）：
+
+- `required`：列出的关系必须在同一方案里同时成立；
+- `forbidden`：列出的关系互斥，同一方案至多成立一个。
+
+```json
+{"combination_constraints": [
+  {"constraint_id": "must-link", "kind": "required",
+   "relations": ["unit-0001", "unit-0002"]},
+  {"constraint_id": "either-or", "kind": "forbidden",
+   "relations": ["unit-0001", "unit-0003"]}
+]}
+```
+
+搜索（`variant_pipeline/combination.py`）对每条仍可成立的关系，在其
+`valid_combinations` 中各选一个端片段→候选的赋值，做约束满足搜索，语义与单条
+关系层保持一致：
+
+- **按来源与片段身份共同定位端点**：异源同名片段不会替补缺失端；约束引用了
+  从未提供的关系、或必现关系无法联合放置时为 `infeasible`，并在 `conflicts`
+  中给出互相冲突的 `constraint_id`、关系与端点；
+- **缺端点保持未知**：必现关系的一端迟到时状态为 `unknown`（列入
+  `unknown_relations`），既不静默丢弃也不用同名片段补齐，已有方案仍保留；
+- **共享片段只计一次实体**：同一片段被多条关系引用时，`fragment_entities`
+  与 `independent_sources` 各只算一次，且该片段在所有关系中必须断言同一候选，
+  否则该联合赋值被剪枝；
+- **重复导入不增加权重**：同一（来源，QNAME）的重复导入在关联层已折叠，
+  搜索不会因此增加实体或独立来源；
+- **方案排序**：先最大化覆盖的关系数，再最小化使用的独立来源数（其次按片段
+  实体数与规范赋值），因此可直接比较“覆盖关系最多 / 独立来源最少”的方案；
+- **不自动确认**：`combo-search` 只读搜索、不发布也不确认任何关系；结果里
+  `adopted` 为空。需经 `adopt_solution(...)` 显式采用，采用记录保留所选来源、
+  端点赋值与依据；无解方案不可采用；
+- **顺序无关**：关系、片段与约束的输入排列变化产生等价结果（集合均先规范化
+  排序后再枚举与输出）。
+
+输出 `candidates.json` 的 `combination_search` 字段以及报告新增同名段落，给出
+`status`（`feasible` / `unknown` / `infeasible`）、排序后的 `solutions`
+（含每条关系的端点赋值、`covered_relations`、`fragment_entities`、
+`independent_sources`）、`constraint_reports`、`unknown_relations`、
+`unsatisfiable_relations` 与冲突依据。可用只读命令复核而不发布版本：
+
+```bash
+.venv/bin/python -m variant_pipeline combo-search \
+  --config examples/config.example.json \
+  --associations relations.json \
+  --combination-constraints constraints.json
+```
 
 ## 输出
 

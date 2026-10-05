@@ -44,6 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     call.add_argument("--extra-reads", action="append", default=[],
                       help="additional SAM batch; repeatable")
     call.add_argument("--associations", help="JSON file of explicit same-molecule fragment relations")
+    call.add_argument("--combination-constraints",
+                      help="JSON file of required/forbidden multi-relation constraints")
     call.add_argument("--outdir", required=True,
                       help="versioned run store root directory")
     call.add_argument("--force", action="store_true",
@@ -93,6 +95,17 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--outdir", required=True)
     verify.add_argument("--version",
                         help="verify a single version (default: all)")
+    combo = sub.add_parser(
+        "combo-search",
+        help="search compatible relation combinations without confirming them")
+    combo.add_argument("--config", required=True, help="run config JSON path")
+    combo.add_argument("--reads", help="SAM path (overrides config reads_path)")
+    combo.add_argument("--extra-reads", action="append", default=[])
+    combo.add_argument("--associations",
+                       help="JSON file of explicit fragment relations")
+    combo.add_argument("--combination-constraints",
+                       help="JSON file of required/forbidden constraints")
+    combo.add_argument("--json-out", help="write structured search result here")
     return parser
 
 
@@ -108,12 +121,17 @@ def _cmd_call(args) -> int:
         config_dict["reads_path"] = args.reads
     if args.associations:
         config_dict["associations_path"] = args.associations
+    if args.combination_constraints:
+        config_dict["combination_constraints_path"] = args.combination_constraints
+    combination_constraints_path = (
+        args.combination_constraints or cfg.combination_constraints_path)
     fingerprint = store.fingerprint(
         config_dict=config_dict,
         reads_path=reads,
         fasta_path=cfg.reference.fasta_path,
         extra_read_paths=args.extra_reads,
         associations_path=args.associations or cfg.associations_path,
+        combination_constraints_path=combination_constraints_path,
     )
     if not args.force:
         duplicate = store.find_duplicate(fingerprint)
@@ -148,6 +166,7 @@ def _cmd_call(args) -> int:
             fasta_path=cfg.reference.fasta_path,
             extra_read_paths=args.extra_reads,
             associations_path=args.associations or cfg.associations_path,
+            combination_constraints_path=combination_constraints_path,
             fingerprint=fingerprint,
         )
     print(text)
@@ -240,6 +259,57 @@ def _cmd_verify(args) -> int:
     return 0
 
 
+def _cmd_combo_search(args) -> int:
+    from .association import load_association_relations
+    from .combination import (
+        constraints_from_association_doc,
+        load_combination_constraints,
+        search_combinations,
+    )
+    from .fasta import read_fasta
+    from .pipeline import load_fragments
+    from .samio import build_fragments, read_sam
+    from .store import sha256_file
+
+    cfg = RunConfig.load(args.config)
+    reads = args.reads or cfg.reads_path
+    if not reads:
+        raise StoreError("no reads path: set reads_path in config or pass --reads")
+    read_paths = [reads] + args.extra_reads
+    associations_path = args.associations or cfg.associations_path
+    if len(read_paths) == 1:
+        fragments, _refs = load_fragments(cfg, reads)
+    else:
+        references = read_fasta(cfg.reference.fasta_path)
+        fragments, seen = [], set()
+        for index, path in enumerate(read_paths, start=1):
+            _h, records = read_sam(Path(path))
+            source_id = sha256_file(path)[:16]
+            batch = build_fragments(
+                records, references,
+                min_base_quality=cfg.parameters.min_base_quality,
+                min_mapping_quality=cfg.parameters.min_mapping_quality,
+                source_id=source_id, source_name=Path(path).name,
+                batch_id=f"batch-{index:04d}-{source_id}")
+            for frag in batch:
+                if frag.evidence_id not in seen:
+                    seen.add(frag.evidence_id)
+                    fragments.append(frag)
+    relations = load_association_relations(associations_path)
+    constraints = constraints_from_association_doc(associations_path)
+    constraints += load_combination_constraints(
+        args.combination_constraints or cfg.combination_constraints_path)
+    unique = {c.constraint_id: c for c in constraints}
+    constraints = [unique[cid] for cid in sorted(unique)]
+    result = search_combinations(fragments, relations, constraints)
+    output = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
+    print(output)
+    if args.json_out:
+        Path(args.json_out).write_text(output + "\n", encoding="utf-8")
+        print(f"[combo-search] {args.json_out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {
@@ -251,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
         "selected-view": _cmd_selected_view,
         "export": _cmd_export,
         "verify": _cmd_verify,
+        "combo-search": _cmd_combo_search,
     }
     try:
         return handlers[args.command](args)

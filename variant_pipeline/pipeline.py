@@ -5,6 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from .association import load_association_relations
+from .combination import (
+    constraints_from_association_doc,
+    load_combination_constraints,
+)
 from .store import sha256_file
 
 from .caller import CallResult, call_variants
@@ -41,7 +45,19 @@ def run(config: RunConfig, reads_path: str | None = None,
     fragments, references = load_fragments(config, reads_path)
     relations = load_association_relations(
         associations_path or config.associations_path)
-    return call_variants(fragments, references, config.parameters, relations)
+    constraints = _load_constraints(config, associations_path)
+    return call_variants(fragments, references, config.parameters, relations,
+                         constraints)
+
+
+def _load_constraints(config: RunConfig, associations_path: str | None):
+    assoc_doc = associations_path or config.associations_path
+    constraints = constraints_from_association_doc(assoc_doc)
+    constraints += load_combination_constraints(
+        config.combination_constraints_path)
+    # De-duplicate by constraint id while staying order independent.
+    unique = {c.constraint_id: c for c in constraints}
+    return [unique[cid] for cid in sorted(unique)]
 
 
 def run_many(config: RunConfig, read_paths: list[str],
@@ -67,4 +83,6 @@ def run_many(config: RunConfig, read_paths: list[str],
                 all_fragments.append(fragment)
     relations = load_association_relations(
         associations_path or config.associations_path)
-    return call_variants(all_fragments, references, config.parameters, relations)
+    constraints = _load_constraints(config, associations_path)
+    return call_variants(all_fragments, references, config.parameters, relations,
+                         constraints)

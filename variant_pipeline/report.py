@@ -81,6 +81,7 @@ def build_payload(cfg: RunConfig, result: CallResult) -> dict:
         ],
         "ambiguity_groups": result.ambiguity_groups,
         "evidence_units": result.evidence_units,
+        "combination_search": result.combination_search,
         "fragment_sources": result.fragment_sources,
     }
 
@@ -190,6 +191,35 @@ def render_text_report(payload: dict) -> str:
                         f"({combo.get('chrom', '?')}, distance={combo.get('distance', '?')})")
             for issue in unit.get("issues", []):
                 lines.append(f"    [{issue['code']}] {issue['message']}")
+    lines.append("")
+    combo = payload.get("combination_search")
+    lines.append("多来源关系兼容组合搜索 (候选, 不自动确认关系)")
+    lines.append("-" * 68)
+    if not combo:
+        lines.append("无")
+    else:
+        lines.append(f"  搜索状态: {combo['status']}")
+        if combo.get("unknown_relations"):
+            lines.append("  缺端点未知关系: " + ", ".join(combo["unknown_relations"]))
+        for report in combo.get("constraint_reports", []):
+            lines.append(
+                f"    约束 {report['constraint_id']} ({report['kind']}): "
+                f"{report['state']} 关系={', '.join(report['relations'])}")
+        if combo.get("solutions"):
+            best = combo["solutions"][0]
+            lines.append(
+                f"  最优方案: 覆盖关系数={len(best['covered_relations'])} "
+                f"独立来源数={len(best['independent_sources'])} "
+                f"片段实体数={len(best['fragment_entities'])}")
+            for rid, assignment in best["assignments"].items():
+                detail = ", ".join(f"{ep}->{vid}"
+                                   for ep, vid in sorted(assignment.items()))
+                lines.append(f"      {rid}: {detail}")
+            lines.append("  方案总数 (含排序): %d; 采用需显式确认" % len(combo["solutions"]))
+        for conflict in combo.get("conflicts", []):
+            lines.append(
+                f"    冲突 [{conflict['code']}] 约束={conflict.get('constraint_id')} "
+                f"关系={conflict.get('relation_id')} 端点={', '.join(conflict.get('endpoints', []))}")
     lines.append("")
     low = payload["low_coverage_regions"]
     lines.append("共享歧义片段 (独立支持与共享证据分列)")

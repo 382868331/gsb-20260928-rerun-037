@@ -32,6 +32,7 @@ class CallResult:
     ambiguity_groups: list[dict] = field(default_factory=list)
     fragment_sources: list[dict] = field(default_factory=list)
     evidence_units: list[dict] = field(default_factory=list)
+    combination_search: dict | None = None
 
 
 def _overlaps(a: Variant, b: Variant) -> bool:
@@ -100,6 +101,7 @@ def call_variants(
     references: dict[str, Reference],
     params: Parameters,
     association_relations: list | None = None,
+    combination_constraints: list | None = None,
 ) -> CallResult:
     fragment_sources = [
         {
@@ -312,6 +314,12 @@ def call_variants(
             unit.to_dict()
             for unit in reconcile_associations(fragments, association_relations)
         ]
+    combination_search = None
+    if combination_constraints:
+        from .combination import search_combinations
+        combination_search = search_combinations(
+            fragments, association_relations or [], combination_constraints
+        ).to_dict()
     return CallResult(
         candidates=candidate_results,
         coverage=coverage,
@@ -319,6 +327,7 @@ def call_variants(
         ambiguity_groups=ambiguity_groups,
         fragment_sources=fragment_sources,
         evidence_units=evidence_units,
+        combination_search=combination_search,
     )
 
 
