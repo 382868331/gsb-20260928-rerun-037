@@ -9,6 +9,11 @@ import tempfile
 from pathlib import Path
 
 from . import __version__
+from .combination import (
+    adopt_combination,
+    load_combination_constraints,
+    search_combinations,
+)
 from .config import RunConfig
 from .diff import compare_versions, render_diff_text
 from .interpretation import (
@@ -93,6 +98,26 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--outdir", required=True)
     verify.add_argument("--version",
                         help="verify a single version (default: all)")
+    combos = sub.add_parser(
+        "combinations",
+        help="search compatible relation combinations under declared "
+        "co-required / mutually-exclusive constraints (does not confirm "
+        "any relation)")
+    combos.add_argument("--outdir", required=True)
+    combos.add_argument("--version", required=True)
+    combos.add_argument("--constraints", required=True,
+                        help="JSON file of combination constraints")
+    combos.add_argument("--json-out")
+
+    adopt = sub.add_parser(
+        "adopt-combination",
+        help="explicitly adopt one candidate combination plan; records "
+        "the selected sources without modifying the base version")
+    adopt.add_argument("--outdir", required=True)
+    adopt.add_argument("--version", required=True)
+    adopt.add_argument("--constraints", required=True)
+    adopt.add_argument("--plan", required=True, help="candidate plan ID")
+    adopt.add_argument("--rationale")
     return parser
 
 
@@ -240,6 +265,41 @@ def _cmd_verify(args) -> int:
     return 0
 
 
+def _cmd_combinations(args) -> int:
+    store = RunStore(args.outdir)
+    info = store.verify(args.version)
+    payload = json.loads(
+        (info.path / "candidates.json").read_text(encoding="utf-8"))
+    constraints = load_combination_constraints(args.constraints)
+    result = search_combinations(
+        payload.get("evidence_units", []), constraints)
+    text = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
+    print(text)
+    if args.json_out:
+        Path(args.json_out).write_text(text + "\n", encoding="utf-8")
+    if result.status != "ok":
+        print("[combinations] 约束互相冲突，无可采用组合；"
+              "冲突约束与端点见 conflicts", file=sys.stderr)
+        return 1
+    print("[combinations] 候选方案仅供比较，未确认任何关系；"
+          "明确采用请用 adopt-combination --plan PLAN_ID")
+    return 0
+
+
+def _cmd_adopt_combination(args) -> int:
+    store = RunStore(args.outdir)
+    constraints = load_combination_constraints(args.constraints)
+    record = adopt_combination(
+        store, args.version, constraints, args.plan,
+        rationale=args.rationale)
+    print(f"[combination] 已采用 {record['plan_id']} "
+          f"(关系 {len(record['association_ids'])} 条, "
+          f"来源 {record['independent_source_count']} 个: "
+          f"{', '.join(record['selected_sources'])}); "
+          f"原分析版本 {record['base_version']} 未修改")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {
@@ -251,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
         "selected-view": _cmd_selected_view,
         "export": _cmd_export,
         "verify": _cmd_verify,
+        "combinations": _cmd_combinations,
+        "adopt-combination": _cmd_adopt_combination,
     }
     try:
         return handlers[args.command](args)

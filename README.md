@@ -149,6 +149,37 @@ QNAME，也不会被误认为同一份片段；同一批片段中途保存后重
 撤回后导出仍保留采用记录，审计可从支持数量追到原分子、端片段、关系 ID/版本、
 冲突依据以及排除依据。
 
+## 多来源关系的兼容组合搜索
+
+研究者可以在一份约束 JSON 中声明关系之间的兼容要求：
+"co_required"（必须同时出现）与 "mutually_exclusive"（必须互斥）：
+
+    {
+      "constraints": [
+        {"constraint_id": "co-1", "kind": "co_required",
+         "association_ids": ["unit-0001", "unit-0002"]},
+        {"constraint_id": "me-1", "kind": "mutually_exclusive",
+         "association_ids": ["unit-0002", "unit-0003"]}
+      ]
+    }
+
+- `variant-pipeline combinations --outdir OUT --version vNNNN --constraints cons.json`
+  依据（来源，片段）身份枚举满足约束的关系组合，同时给出两种可比较的
+  候选方案：`max_coverage`（覆盖关系最多）与 `min_sources`（在仍覆盖
+  关系的前提下使用独立来源最少），并附比较说明。
+- 缺端点的关系保留为 `unknown_relations`，不会被其他来源的同名片段替补；
+  包含未决成员的 co_required 组记入 `blocked_constraints`。
+- 多个关系共享一个片段时该片段只计一次实体（`entity_count`）；同一
+  （来源，QNAME）的重复导入不增加来源数与支持权重。
+- 约束互相冲突（同一批关系既必须同现又必须互斥）时搜索返回
+  `no_solution`，并在 `conflicts` 中给出冲突约束与涉及关系的端点。
+- 搜索只产生候选方案（`status=candidate`），不自动确认任何关系；明确采用
+  用 `adopt-combination --plan PLAN_ID`，采用记录保存在 `combinations/`
+  （含选定来源 `selected_sources`），不修改原分析版本，再次采用会把旧记录
+  放入 `history`，导出版本的审计 JSON 含 `combination_adoption`。
+- 全部排序均规范化：约束或关系输入排列变化得到等价结果（方案 ID 只取决于
+  排序后的关系集合）。
+
 ## 输出
 
 每个候选包含支持证据（ALT 片段数、正/反向、ALT 比例、平均碱基质量、

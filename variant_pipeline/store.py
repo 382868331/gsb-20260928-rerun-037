@@ -266,7 +266,15 @@ class RunStore:
             "evidence_units": payload.get("evidence_units", []),
             "ambiguity_groups": groups,
             "provisional_selection": self.selection_record(version),
+            "combination_adoption": self.combination_record(version),
         }
+
+    def combination_record(self, version: str) -> dict | None:
+        path = (self.root / "combinations"
+                / f"{version.replace('/', '_')}.json")
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def selection_record(self, version: str) -> dict | None:
         path = self.root / "selections" / f"{version.replace('/', '_')}.json"
